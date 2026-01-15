@@ -40,8 +40,6 @@ def val_collate_fn(batch):
     return torch.stack(imgs, dim=0), pids, camids, camids_batch, viewids, img_paths
 
 def make_dataloader(cfg):
-    
-    #các bước chuyển đổi ảnh cho tập huấn luyện và tập kiểm tra
     train_transforms = T.Compose([
             T.Resize(cfg.INPUT.SIZE_TRAIN, interpolation=3),
             T.RandomHorizontalFlip(p=cfg.INPUT.PROB),
@@ -70,7 +68,6 @@ def make_dataloader(cfg):
     view_num = dataset.num_train_vids
 
     if 'triplet' in cfg.DATALOADER.SAMPLER:
-         # multiGPu
         if cfg.MODEL.DIST_TRAIN:
             print('DIST_TRAIN START')
             mini_batch_size = cfg.SOLVER.STAGE2.IMS_PER_BATCH // dist.get_world_size()

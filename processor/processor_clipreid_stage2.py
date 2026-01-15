@@ -24,7 +24,6 @@ def do_train_stage2(cfg,
     checkpoint_period = cfg.SOLVER.STAGE2.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.STAGE2.EVAL_PERIOD
     instance = cfg.DATALOADER.NUM_INSTANCE
-    patience = cfg.SOLVER.STAGE2.PATIENCE  # Thêm dòng này
 
     device = "cuda"
     epochs = cfg.SOLVER.STAGE2.MAX_EPOCHS
@@ -47,11 +46,6 @@ def do_train_stage2(cfg,
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
     xent = SupConLoss(device)
-    
-    # Thêm biến cho early stopping
-    best_mAP = 0.0
-    epochs_no_improve = 0
-    best_epoch = 0
     
     # train
     import time
@@ -76,9 +70,6 @@ def do_train_stage2(cfg,
             text_features.append(text_feature.cpu())
         text_features = torch.cat(text_features, 0).cuda()
 
-    #CONFIG FOR CROSS-ATTENTION
-    use_cross_attention_flag = getattr(cfg.MODEL, 'USE_CROSS_ATTENTION', True)
-
     for epoch in range(1, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
@@ -102,8 +93,7 @@ def do_train_stage2(cfg,
             else: 
                 target_view = None
             with amp.autocast(enabled=True):
-                score, feat, image_features = model(x = img, label = target, cam_label=target_cam, view_label=target_view,
-                                                    use_cross_attention=use_cross_attention_flag)
+                score, feat, image_features = model(x = img, label = target, cam_label=target_cam, view_label=target_view)
                 logits = image_features @ text_features.t()
                 loss = loss_fn(score, feat, target, target_cam, logits)
 
@@ -137,10 +127,15 @@ def do_train_stage2(cfg,
             logger.info("Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]"
                     .format(epoch, time_per_batch, train_loader_stage2.batch_size / time_per_batch))
 
-        # Thêm early stopping logic
-        current_mAP = 0.0
-        should_stop = False
-        
+        if epoch % checkpoint_period == 0:
+            if cfg.MODEL.DIST_TRAIN:
+                if dist.get_rank() == 0:
+                    torch.save(model.state_dict(),
+                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+            else:
+                torch.save(model.state_dict(),
+                           os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+
         if epoch % eval_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
@@ -156,11 +151,9 @@ def do_train_stage2(cfg,
                                 target_view = target_view.to(device)
                             else: 
                                 target_view = None
-                            # Eval sử dụng visual feature thuần, không dùng cross-attention
                             feat = model(img, cam_label=camids, view_label=target_view)
                             evaluator.update((feat, vid, camid))
                     cmc, mAP, _, _, _, _, _ = evaluator.compute()
-                    current_mAP = mAP
                     logger.info("Validation Results - Epoch: {}".format(epoch))
                     logger.info("mAP: {:.1%}".format(mAP))
                     for r in [1, 5, 10]:
@@ -179,88 +172,20 @@ def do_train_stage2(cfg,
                             target_view = target_view.to(device)
                         else: 
                             target_view = None
-                        # Eval sử dụng visual feature thuần, không dùng cross-attention
                         feat = model(img, cam_label=camids, view_label=target_view)
                         evaluator.update((feat, vid, camid))
                 cmc, mAP, _, _, _, _, _ = evaluator.compute()
-                current_mAP = mAP
                 logger.info("Validation Results - Epoch: {}".format(epoch))
                 logger.info("mAP: {:.1%}".format(mAP))
                 for r in [1, 5, 10]:
                     logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
                 torch.cuda.empty_cache()
 
-            # Early stopping logic
-            if current_mAP > best_mAP:
-                best_mAP = current_mAP
-                best_epoch = epoch
-                epochs_no_improve = 0
-                # Save best model
-                if cfg.MODEL.DIST_TRAIN:
-                    if dist.get_rank() == 0:
-                        torch.save(model.state_dict(),
-                                   os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_best.pth'))
-                else:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_best.pth'))
-                logger.info("Best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, best_epoch))
-            else:
-                epochs_no_improve += 1
-                logger.info("No improvement for {} epochs. Best mAP: {:.1%} at epoch {}".format(
-                    epochs_no_improve, best_mAP, best_epoch))
-
-            # Check early stopping condition
-            if epochs_no_improve >= patience:
-                logger.info("Early stopping triggered after {} epochs without improvement".format(epochs_no_improve))
-                logger.info("Best mAP: {:.1%} at epoch {}".format(best_mAP, best_epoch))
-                should_stop = True
-
-        if epoch % checkpoint_period == 0:
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
-            else:
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
-
-        # Break loop if early stopping condition met
-        if should_stop:
-            break
-        
-    logger.info("=== FINAL VALIDATION ===")
-    model.eval()
-    evaluator.reset()
-
-    for n_iter, (img, vid, camid, camids, target_view, _) in enumerate(val_loader):
-        with torch.no_grad():
-            img = img.to(device)
-            if cfg.MODEL.SIE_CAMERA:
-                camids = camids.to(device)
-            else: 
-                camids = None
-            if cfg.MODEL.SIE_VIEW:
-                target_view = target_view.to(device)
-            else: 
-                target_view = None
-            # FINAL eval sử dụng visual feature thuần, không dùng cross-attention
-            feat = model(img, cam_label=camids, view_label=target_view)
-            evaluator.update((feat, vid, camid))
-
-    cmc, mAP, _, _, _, _, _ = evaluator.compute()
-    logger.info("FINAL Validation Results")
-    logger.info("mAP: {:.1%}".format(mAP))
-    for r in [1, 5, 10]:
-        logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-    torch.cuda.empty_cache()
-        
     all_end_time = time.monotonic()
     total_time = timedelta(seconds=all_end_time - all_start_time)
     logger.info("Total running time: {}".format(total_time))
-    logger.info("Best mAP: {:.1%} achieved at epoch {}".format(best_mAP, best_epoch))
     print(cfg.OUTPUT_DIR)
 
-# Hàm do_inference giữ nguyên
 def do_inference(cfg,
                  model,
                  val_loader,
@@ -293,7 +218,6 @@ def do_inference(cfg,
                 target_view = target_view.to(device)
             else: 
                 target_view = None
-            # Inference sử dụng visual feature thuần, không dùng cross-attention
             feat = model(img, cam_label=camids, view_label=target_view)
             evaluator.update((feat, pid, camid))
             img_path_list.extend(imgpath)

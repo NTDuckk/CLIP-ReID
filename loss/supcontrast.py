@@ -18,7 +18,7 @@ class SupConLoss(nn.Module):
         mask = torch.eq(t_label.unsqueeze(1).expand(batch_size, batch_size_N), \
             i_targets.unsqueeze(0).expand(batch_size,batch_size_N)).float().to(self.device) 
 
-        logits = torch.div(torch.matmul(text_features, image_features.T),self.temperature)
+        logits = torch.div(torch.matmul(text_features, image_features.T),self.temperature) #consine sim
         # for numerical stability
         logits_max, _ = torch.max(logits, dim=1, keepdim=True)
         logits = logits - logits_max.detach() 

@@ -37,8 +37,6 @@ def make_optimizer_2stage(cfg, model, center_criterion):
         if "bias" in key:
             lr = cfg.SOLVER.STAGE2.BASE_LR * cfg.SOLVER.STAGE2.BIAS_LR_FACTOR
             weight_decay = cfg.SOLVER.STAGE2.WEIGHT_DECAY_BIAS
-        if "cross_attention" in key or "ca_alpha" in key:
-            lr = cfg.SOLVER.STAGE2.BASE_LR * 10
         if cfg.SOLVER.STAGE2.LARGE_FC_LR:
             if "classifier" in key or "arcface" in key:
                 lr = cfg.SOLVER.BASE_LR * 2
@@ -55,3 +53,29 @@ def make_optimizer_2stage(cfg, model, center_criterion):
     optimizer_center = torch.optim.SGD(center_criterion.parameters(), lr=cfg.SOLVER.STAGE2.CENTER_LR)
 
     return optimizer, optimizer_center
+    
+def make_optimizer_15stage(cfg, model):
+    params = []
+    for key, value in model.named_parameters():
+        if "prompt_learner.shape_ctx" in key:
+            value.requires_grad_(True)
+            params += [{
+                "params": [value],
+                "lr": cfg.SOLVER.STAGE15.BASE_LR,
+                "weight_decay": cfg.SOLVER.STAGE15.WEIGHT_DECAY
+            }]
+        else:
+            value.requires_grad_(False)
+
+    if len(params) == 0:
+        raise ValueError("No params matched prompt_learner.shape_ctx")
+
+    opt_name = cfg.SOLVER.STAGE15.OPTIMIZER_NAME
+    if opt_name == "AdamW":
+        return torch.optim.AdamW(params, lr=cfg.SOLVER.STAGE15.BASE_LR,
+                                 weight_decay=cfg.SOLVER.STAGE15.WEIGHT_DECAY)
+    if opt_name == "SGD":
+        return torch.optim.SGD(params, lr=cfg.SOLVER.STAGE15.BASE_LR,
+                               momentum=cfg.SOLVER.STAGE15.MOMENTUM,
+                               weight_decay=cfg.SOLVER.STAGE15.WEIGHT_DECAY)
+    return getattr(torch.optim, opt_name)(params)

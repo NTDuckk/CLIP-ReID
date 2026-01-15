@@ -1,18 +1,21 @@
 from utils.logger import setup_logger
 from datasets.make_dataloader_clipreid import make_dataloader
 from model.make_model_clipreid import make_model
-from solver.make_optimizer_prompt import make_optimizer_1stage, make_optimizer_2stage
+from solver.make_optimizer_prompt import make_optimizer_1stage, make_optimizer_2stage, make_optimizer_15stage
 from solver.scheduler_factory import create_scheduler
 from solver.lr_scheduler import WarmupMultiStepLR
 from loss.make_loss import make_loss
 from processor.processor_clipreid_stage1 import do_train_stage1
 from processor.processor_clipreid_stage2 import do_train_stage2
+from processor.processor_clipreid_stage15 import do_train_stage15
 import random
 import torch
 import numpy as np
 import os
 import argparse
 from config import cfg
+
+
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -35,25 +38,9 @@ if __name__ == '__main__':
     parser.add_argument("--local_rank", default=0, type=int)
     args = parser.parse_args()
 
-    cfg.defrost()
-
-    # Nếu STAGE2 chưa tồn tại thì tạo mới
-    if not hasattr(cfg.SOLVER, 'STAGE2'):
-        from yacs.config import CfgNode
-        cfg.SOLVER.STAGE2 = CfgNode()
-
-    # Tạo sẵn giá trị mặc định (sẽ bị YAML override nếu YAML có)
-    if not hasattr(cfg.SOLVER.STAGE2, 'MAX_EPOCHS'):
-        cfg.SOLVER.STAGE2.MAX_EPOCHS = 200
-
-    if not hasattr(cfg.SOLVER.STAGE2, 'PATIENCE'):
-        cfg.SOLVER.STAGE2.PATIENCE = 30
-
-
     if args.config_file != "":
         cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
-    
     cfg.freeze()
 
     set_seed(cfg.SOLVER.SEED)
@@ -75,11 +62,6 @@ if __name__ == '__main__':
             config_str = "\n" + cf.read()
             logger.info(config_str)
     logger.info("Running with config:\n{}".format(cfg))
-
-    # Log cấu hình stage2
-    logger.info("Stage2 Configuration:")
-    logger.info("  MAX_EPOCHS: {}".format(cfg.SOLVER.STAGE2.MAX_EPOCHS))
-    logger.info("  PATIENCE: {}".format(cfg.SOLVER.STAGE2.PATIENCE if hasattr(cfg.SOLVER.STAGE2, 'PATIENCE') else 30))
 
     if cfg.MODEL.DIST_TRAIN:
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
@@ -103,17 +85,39 @@ if __name__ == '__main__':
         args.local_rank
     )
 
-    print("\n================== LEARNABLE PROMPT TOKENS (after Stage 1) ==================")
-    prompt_learner = model.module.prompt_learner if hasattr(model, "module") else model.prompt_learner
-    for idx in range(min(3, prompt_learner.cls_ctx.shape[0])):
-        ctx = prompt_learner.cls_ctx[idx].detach().cpu()
-        print(f"\n===== Learnable context tokens for ID {idx} =====")
-        print("Shape:", ctx.shape)
-        print(ctx[:4])
+    # =======================
+    # Stage 1.5 (new)
+    # =======================
+    # dùng full prompt cho stage15
+    if hasattr(model, "prompt_learner") and hasattr(model.prompt_learner, "set_prompt_mode"):
+        # model.prompt_learner.set_prompt_mode("full")
+        model.prompt_learner.set_prompt_mode("shape")
 
+    optimizer_15stage = make_optimizer_15stage(cfg, model)
+    scheduler_15stage = create_scheduler(optimizer_15stage, num_epochs=cfg.SOLVER.STAGE15.MAX_EPOCHS, 
+    lr_min=cfg.SOLVER.STAGE15.LR_MIN, warmup_lr_init=cfg.SOLVER.STAGE15.WARMUP_LR_INIT, 
+    warmup_t=cfg.SOLVER.STAGE15.WARMUP_EPOCHS, noise_range=None)
+
+    do_train_stage15(
+        cfg,
+        model,
+        train_loader_stage1,      # dùng loader stage1
+        optimizer_15stage,
+        scheduler_15stage,
+        args.local_rank
+    )
+    for name, p in model.named_parameters():
+        if "text_encoder" in name:
+            p.requires_grad_(False)
+        elif "prompt_learner" in name:
+            p.requires_grad_(False)
+        else:
+            # train everything else (image encoder + heads)
+            p.requires_grad_(True)
     optimizer_2stage, optimizer_center_2stage = make_optimizer_2stage(cfg, model, center_criterion)
     scheduler_2stage = WarmupMultiStepLR(optimizer_2stage, cfg.SOLVER.STAGE2.STEPS, cfg.SOLVER.STAGE2.GAMMA, cfg.SOLVER.STAGE2.WARMUP_FACTOR,
                                   cfg.SOLVER.STAGE2.WARMUP_ITERS, cfg.SOLVER.STAGE2.WARMUP_METHOD)
+
 
     do_train_stage2(
         cfg,
@@ -127,3 +131,5 @@ if __name__ == '__main__':
         loss_func,
         num_query, args.local_rank
     )
+
+ 
