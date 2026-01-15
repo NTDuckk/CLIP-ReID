@@ -181,7 +181,7 @@ def do_train_stage15(cfg,
             loss_distill_meter.update(loss_distill.item(), target.size(0))
             loss_align_meter.update(loss_align.item(), target.size(0))
             conf_meter.update(conf.mean().item(), target.size(0))
-            used_meter.update(mask.mean().item(), target.size(0))
+            # used_meter.update(mask.mean().item(), target.size(0))
 
             if (n_iter + 1) % log_period == 0:
                 logger.info(
