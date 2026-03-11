@@ -14,6 +14,7 @@ def do_train_stage2(cfg,
              model,
              center_criterion,
              train_loader_stage2,
+             train_loader_stage1,
              val_loader,
              optimizer,
              optimizer_center,
@@ -58,6 +59,34 @@ def do_train_stage2(cfg,
     left = num_classes-batch* (num_classes//batch)
     if left != 0 :
         i_ter = i_ter+1
+    # --- Compute per-class mean bipolar scores for shape-conditioned text ---
+    _model = model.module if hasattr(model, 'module') else model
+    use_shape = _model.use_shape
+    mean_bp_per_class = None
+
+    if use_shape:
+        logger.info("Computing per-class mean bipolar scores from training data...")
+        all_bipolar = []
+        all_labels = []
+        with torch.no_grad():
+            for img_s1, vid_s1, _, _ in train_loader_stage1:
+                img_s1 = img_s1.to(device)
+                with amp.autocast(enabled=True):
+                    img_feat = model(img_s1, get_image=True)
+                bp = _model.compute_bipolar_scores(img_feat)
+                all_bipolar.append(bp.cpu())
+                all_labels.append(vid_s1)
+        all_bipolar = torch.cat(all_bipolar, 0)   # [N, 16]
+        all_labels = torch.cat(all_labels, 0)      # [N]
+        mean_bp_per_class = torch.zeros(num_classes, 16)
+        for c in range(num_classes):
+            mask = (all_labels == c)
+            if mask.sum() > 0:
+                mean_bp_per_class[c] = all_bipolar[mask].mean(0)
+        mean_bp_per_class = mean_bp_per_class.to(device)
+        logger.info("Mean bipolar scores computed for {} classes".format(num_classes))
+
+    # --- Pre-compute text features WITH per-class shape info ---
     text_features = []
     with torch.no_grad():
         for i in range(i_ter):
@@ -65,9 +94,9 @@ def do_train_stage2(cfg,
                 l_list = torch.arange(i*batch, (i+1)* batch)
             else:
                 l_list = torch.arange(i*batch, num_classes)
+            bp_batch = mean_bp_per_class[l_list] if use_shape else None
             with amp.autocast(enabled=True):
-                # bipolar_scores=None → shape token zeros for text pre-computation
-                text_feature = model(label=l_list, get_text=True)
+                text_feature = model(label=l_list, get_text=True, bipolar_scores=bp_batch)
             text_features.append(text_feature.cpu())
         text_features = torch.cat(text_features, 0).cuda()
 
