@@ -4,10 +4,24 @@
 @contact: sherlockliao01@gmail.com
 """
 
+import torch
 import torch.nn.functional as F
 from .softmax_loss import CrossEntropyLabelSmooth, LabelSmoothingCrossEntropy
 from .triplet_loss import TripletLoss
 from .center_loss import CenterLoss
+
+
+def shape_consistency_loss(bipolar, pids):
+    """Same person → bipolar shape descriptor should be consistent."""
+    loss = 0.0
+    unique_pids = pids.unique()
+    for pid in unique_pids:
+        mask = (pids == pid)
+        if mask.sum() > 1:
+            feats = bipolar[mask]            # [n, 16]
+            mean_feat = feats.mean(0)
+            loss += ((feats - mean_feat) ** 2).mean()
+    return loss / max(unique_pids.shape[0], 1)
 
 
 def make_loss(cfg, num_classes):    # modified by gu
@@ -34,7 +48,8 @@ def make_loss(cfg, num_classes):    # modified by gu
             return F.cross_entropy(score, target)
 
     elif cfg.DATALOADER.SAMPLER == 'softmax_triplet':
-        def loss_func(score, feat, target, target_cam, i2tscore = None):
+        def loss_func(score, feat, target, target_cam, i2tscore=None,
+                      shape_score=None, shape_feat=None, bipolar_scores=None):
             if cfg.MODEL.METRIC_LOSS_TYPE == 'triplet':
                 if cfg.MODEL.IF_LABELSMOOTH == 'on':
                     if isinstance(score, list):
@@ -51,10 +66,18 @@ def make_loss(cfg, num_classes):    # modified by gu
                     
                     loss = cfg.MODEL.ID_LOSS_WEIGHT * ID_LOSS + cfg.MODEL.TRIPLET_LOSS_WEIGHT * TRI_LOSS
 
-                    if i2tscore != None:
+                    if i2tscore is not None:
                         I2TLOSS = xent(i2tscore, target)
                         loss = cfg.MODEL.I2T_LOSS_WEIGHT * I2TLOSS + loss
-                        
+
+                    # --- Shape losses (PP4) ---
+                    if shape_score is not None:
+                        loss += cfg.MODEL.SHAPE_ID_LOSS_WEIGHT * xent(shape_score, target)
+                    if shape_feat is not None:
+                        loss += cfg.MODEL.SHAPE_TRI_LOSS_WEIGHT * triplet(shape_feat, target)[0]
+                    if bipolar_scores is not None:
+                        loss += cfg.MODEL.SHAPE_CONSISTENCY_LOSS_WEIGHT * shape_consistency_loss(bipolar_scores, target)
+
                     return loss
                 else:
                     if isinstance(score, list):
@@ -71,10 +94,17 @@ def make_loss(cfg, num_classes):    # modified by gu
 
                     loss = cfg.MODEL.ID_LOSS_WEIGHT * ID_LOSS + cfg.MODEL.TRIPLET_LOSS_WEIGHT * TRI_LOSS
                     
-                    if i2tscore != None:
+                    if i2tscore is not None:
                         I2TLOSS = F.cross_entropy(i2tscore, target)
                         loss = cfg.MODEL.I2T_LOSS_WEIGHT * I2TLOSS + loss
 
+                    # --- Shape losses (PP4) ---
+                    if shape_score is not None:
+                        loss += cfg.MODEL.SHAPE_ID_LOSS_WEIGHT * F.cross_entropy(shape_score, target)
+                    if shape_feat is not None:
+                        loss += cfg.MODEL.SHAPE_TRI_LOSS_WEIGHT * triplet(shape_feat, target)[0]
+                    if bipolar_scores is not None:
+                        loss += cfg.MODEL.SHAPE_CONSISTENCY_LOSS_WEIGHT * shape_consistency_loss(bipolar_scores, target)
 
                     return loss
             else:

@@ -8,6 +8,7 @@ import torch.distributed as dist
 import collections
 from torch.nn import functional as F
 from loss.supcontrast import SupConLoss
+from loss.make_loss import shape_consistency_loss
 
 def do_train_stage1(cfg,
              model,
@@ -32,6 +33,10 @@ def do_train_stage1(cfg,
     loss_meter = AverageMeter()
     scaler = amp.GradScaler()
     xent = SupConLoss(device)
+
+    # Resolve underlying model (handle DataParallel)
+    _model = model.module if hasattr(model, 'module') else model
+    use_shape = _model.use_shape
     
     # train
     import time
@@ -55,6 +60,17 @@ def do_train_stage1(cfg,
         batch = cfg.SOLVER.STAGE1.IMS_PER_BATCH
         num_image = labels_list.shape[0]
         i_ter = num_image // batch
+
+        # Pre-compute bipolar shape scores (frozen, from CLIP zero-shot)
+        if use_shape:
+            shape_text_feats = _model.shape_text_feats  # [32, 512]
+            img_norm = F.normalize(image_features_list.float(), dim=-1)
+            text_norm = F.normalize(shape_text_feats.float(), dim=-1)
+            all_scores = img_norm @ text_norm.t()                  # [N, 32]
+            bipolar_scores_list = all_scores[:, 0::2] - all_scores[:, 1::2]  # [N, 16]
+            logger.info("Computed bipolar shape scores for {} images".format(num_image))
+        else:
+            bipolar_scores_list = None
     del labels, image_features
 
     for epoch in range(1, epochs + 1):
@@ -72,12 +88,24 @@ def do_train_stage1(cfg,
             
             target = labels_list[b_list]
             image_features = image_features_list[b_list]
+
+            # Get bipolar scores for this batch
+            if use_shape and bipolar_scores_list is not None:
+                bp_batch = bipolar_scores_list[b_list]
+            else:
+                bp_batch = None
+
             with amp.autocast(enabled=True):
-                text_features = model(label = target, get_text = True)
+                text_features = model(label=target, get_text=True, bipolar_scores=bp_batch)
             loss_i2t = xent(image_features, text_features, target, target)
             loss_t2i = xent(text_features, image_features, target, target)
 
             loss = loss_i2t + loss_t2i
+
+            # Shape consistency loss
+            if use_shape and bp_batch is not None:
+                loss_sc = shape_consistency_loss(bp_batch, target)
+                loss = loss + cfg.MODEL.SHAPE_CONSISTENCY_LOSS_WEIGHT * loss_sc
 
             scaler.scale(loss).backward()
 

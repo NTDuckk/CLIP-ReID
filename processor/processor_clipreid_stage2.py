@@ -66,7 +66,8 @@ def do_train_stage2(cfg,
             else:
                 l_list = torch.arange(i*batch, num_classes)
             with amp.autocast(enabled=True):
-                text_feature = model(label = l_list, get_text = True)
+                # bipolar_scores=None → shape token zeros for text pre-computation
+                text_feature = model(label=l_list, get_text=True)
             text_features.append(text_feature.cpu())
         text_features = torch.cat(text_features, 0).cuda()
 
@@ -93,9 +94,15 @@ def do_train_stage2(cfg,
             else: 
                 target_view = None
             with amp.autocast(enabled=True):
-                score, feat, image_features = model(x = img, label = target, cam_label=target_cam, view_label=target_view)
+                (score, feat, image_features,
+                 cls_score_shape, shape_feat, bipolar_scores) = model(
+                    x=img, label=target, cam_label=target_cam, view_label=target_view
+                )
                 logits = image_features @ text_features.t()
-                loss = loss_fn(score, feat, target, target_cam, logits)
+                loss = loss_fn(score, feat, target, target_cam, logits,
+                               shape_score=cls_score_shape,
+                               shape_feat=shape_feat,
+                               bipolar_scores=bipolar_scores)
 
             scaler.scale(loss).backward()
 

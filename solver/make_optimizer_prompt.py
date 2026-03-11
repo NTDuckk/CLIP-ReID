@@ -10,6 +10,8 @@ def make_optimizer_1stage(cfg, model):
             weight_decay = cfg.SOLVER.STAGE1.WEIGHT_DECAY
             params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
             keys += [key]
+    if not params:
+        raise ValueError("No trainable parameters found for stage 1 (prompt_learner)")
     if cfg.SOLVER.STAGE1.OPTIMIZER_NAME == 'SGD':
         optimizer = getattr(torch.optim, cfg.SOLVER.STAGE1.OPTIMIZER_NAME)(params, momentum=cfg.SOLVER.STAGE1.MOMENTUM)
     elif cfg.SOLVER.STAGE1.OPTIMIZER_NAME == 'AdamW':
