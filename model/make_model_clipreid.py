@@ -118,6 +118,8 @@ class build_transformer(nn.Module):
         self.camera_num = camera_num
         self.view_num = view_num
         self.sie_coe = cfg.MODEL.SIE_COE   
+        # ensure attribute exists even if SIE flags are disabled
+        self.cv_embed = None
 
         self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
         self.classifier.apply(weights_init_classifier)
