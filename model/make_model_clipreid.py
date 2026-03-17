@@ -182,11 +182,11 @@ class build_transformer(nn.Module):
                 image_feature = image_features_proj[0]
 
             elif self.model_name == 'ViT-B-16':
-                if cam_label != None and view_label != None:
+                if self.cv_embed is not None and cam_label is not None and view_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[cam_label * self.view_num + view_label]
-                elif cam_label != None:
+                elif self.cv_embed is not None and cam_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[cam_label]
-                elif view_label != None:
+                elif self.cv_embed is not None and view_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[view_label]
                 else:
                     cv_embed = None
@@ -213,11 +213,11 @@ class build_transformer(nn.Module):
                 image_feature = image_features_proj[0]
 
             elif self.model_name == 'ViT-B-16':
-                if cam_label != None and view_label != None:
+                if self.cv_embed is not None and cam_label is not None and view_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[cam_label * self.view_num + view_label]
-                elif cam_label != None:
+                elif self.cv_embed is not None and cam_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[cam_label]
-                elif view_label != None:
+                elif self.cv_embed is not None and view_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[view_label]
                 else:
                     cv_embed = None
@@ -269,11 +269,11 @@ class build_transformer(nn.Module):
                 image_features_last, image_features, image_features_proj = self.image_encoder(x)
                 return image_features_proj[0]
             elif self.model_name == 'ViT-B-16':
-                if cam_label != None and view_label != None:
+                if self.cv_embed is not None and cam_label is not None and view_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[cam_label * self.view_num + view_label]
-                elif cam_label != None:
+                elif self.cv_embed is not None and cam_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[cam_label]
-                elif view_label != None:
+                elif self.cv_embed is not None and view_label is not None:
                     cv_embed = self.sie_coe * self.cv_embed[view_label]
                 else:
                     cv_embed = None
@@ -291,11 +291,11 @@ class build_transformer(nn.Module):
             img_feature_proj = image_features_proj[0]
 
         elif self.model_name == 'ViT-B-16':
-            if cam_label != None and view_label != None:
+            if self.cv_embed is not None and cam_label is not None and view_label is not None:
                 cv_embed = self.sie_coe * self.cv_embed[cam_label * self.view_num + view_label]
-            elif cam_label != None:
+            elif self.cv_embed is not None and cam_label is not None:
                 cv_embed = self.sie_coe * self.cv_embed[cam_label]
-            elif view_label != None:
+            elif self.cv_embed is not None and view_label is not None:
                 cv_embed = self.sie_coe * self.cv_embed[view_label]
             else:
                 cv_embed = None
