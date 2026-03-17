@@ -1,23 +1,42 @@
 import torch
 
-
 def make_optimizer_1stage(cfg, model):
+    # Freeze everything first
+    for _, value in model.named_parameters():
+        value.requires_grad_(False)
+
     params = []
     keys = []
+
     for key, value in model.named_parameters():
-        if "prompt_learner" in key:
+        # Only optimize the 3 IM2TEXT branches inside inversion_prompt_learner
+        if "inversion_prompt_learner" in key:
+            value.requires_grad_(True)
             lr = cfg.SOLVER.STAGE1.BASE_LR
             weight_decay = cfg.SOLVER.STAGE1.WEIGHT_DECAY
             params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
             keys += [key]
-    if not params:
-        raise ValueError("No trainable parameters found for stage 1 (prompt_learner)")
+
+    if len(params) == 0:
+        raise RuntimeError("No trainable parameters found for stage1 under 'inversion_prompt_learner'")
+
+    print("Stage1 trainable params:")
+    for key in keys:
+        print("  ", key)
+
     if cfg.SOLVER.STAGE1.OPTIMIZER_NAME == 'SGD':
-        optimizer = getattr(torch.optim, cfg.SOLVER.STAGE1.OPTIMIZER_NAME)(params, momentum=cfg.SOLVER.STAGE1.MOMENTUM)
+        optimizer = getattr(torch.optim, cfg.SOLVER.STAGE1.OPTIMIZER_NAME)(
+            params, momentum=cfg.SOLVER.STAGE1.MOMENTUM
+        )
     elif cfg.SOLVER.STAGE1.OPTIMIZER_NAME == 'AdamW':
-        optimizer = torch.optim.AdamW(params, lr=cfg.SOLVER.STAGE1.BASE_LR, weight_decay=cfg.SOLVER.STAGE1.WEIGHT_DECAY)
+        optimizer = torch.optim.AdamW(
+            params,
+            lr=cfg.SOLVER.STAGE1.BASE_LR,
+            weight_decay=cfg.SOLVER.STAGE1.WEIGHT_DECAY
+        )
     else:
         optimizer = getattr(torch.optim, cfg.SOLVER.STAGE1.OPTIMIZER_NAME)(params)
+
     return optimizer
 
 

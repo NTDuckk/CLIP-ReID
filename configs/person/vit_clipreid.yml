@@ -8,10 +8,6 @@ MODEL:
   ID_LOSS_WEIGHT : 0.25
   TRIPLET_LOSS_WEIGHT : 1.0
   I2T_LOSS_WEIGHT : 1.0
-  SHAPE_DIM : 256
-  SHAPE_ID_LOSS_WEIGHT : 0.25
-  SHAPE_TRI_LOSS_WEIGHT : 0.5
-  SHAPE_CONSISTENCY_LOSS_WEIGHT : 0.1
   # SIE_CAMERA: True
   # SIE_COE : 1.0
 
@@ -55,9 +51,9 @@ SOLVER:
     WEIGHT_DECAY_BIAS: 0.0001
     LARGE_FC_LR: False
     MAX_EPOCHS: 60
-    CHECKPOINT_PERIOD: 20
+    CHECKPOINT_PERIOD: 60
     LOG_PERIOD: 50
-    EVAL_PERIOD: 10
+    EVAL_PERIOD: 60
     BIAS_LR_FACTOR: 2
     
     STEPS: [30, 50]
@@ -72,9 +68,9 @@ TEST:
   FEAT_NORM: 'yes'
 
 DATASETS:
-  NAMES: ('market1501')
-  ROOT_DIR: ('datasets/dataset')
-OUTPUT_DIR: 'vit_clipreid_market1501/logs'
+#   NAMES: ('market1501')
+#   ROOT_DIR: ('')
+# OUTPUT_DIR: ''
 
 #   NAMES: ('dukemtmc')
 #   ROOT_DIR: ('')

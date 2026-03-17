@@ -91,7 +91,6 @@ if __name__ == '__main__':
         model,
         center_criterion,
         train_loader_stage2,
-        train_loader_stage1,
         val_loader,
         optimizer_2stage,
         optimizer_center_2stage,
