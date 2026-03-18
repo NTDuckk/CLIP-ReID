@@ -42,6 +42,8 @@ def make_optimizer_1stage(cfg, model):
 
 
 def make_optimizer_2stage(cfg, model, center_criterion):
+    for _, value in model.named_parameters():
+        value.requires_grad_(True)
     params = []
     keys = []
     for key, value in model.named_parameters():
