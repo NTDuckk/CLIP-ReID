@@ -109,7 +109,10 @@ def make_optimizer_2stage(cfg, model, center_criterion):
             value.requires_grad_(False)
             continue
         # freeze `prompt_learner` but keep `inversion_prompt_learner` trainable
-        if "prompt_learner" in key and "inversion_prompt_learner" not in key:
+        if "prompt_learner" in key:
+            value.requires_grad_(False)
+            continue
+        if "inversion_prompt_learner" in key:
             value.requires_grad_(False)
             continue
         if not value.requires_grad:

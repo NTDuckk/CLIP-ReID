@@ -105,21 +105,52 @@ class InversionPromptLearner3(nn.Module):
         return clothes_token, hairstyle_token, carrying_token
 
 
+# class InversionPromptLearner5(nn.Module):
+#     def __init__(self, clip_model):
+#         super().__init__()
+#         common_kwargs = dict(
+#             embed_dim=clip_model.visual.output_dim,
+#             middle_dim=512,
+#             output_dim=clip_model.transformer.width,
+#             n_layer=3,
+#             dropout=0.1,
+#         )
+#         self.prompt_top = IM2TEXT(**common_kwargs)
+#         self.prompt_underneath = IM2TEXT(**common_kwargs)
+#         self.prompt_shoes = IM2TEXT(**common_kwargs)
+#         self.prompt_hairstyle = IM2TEXT(**common_kwargs)
+#         self.prompt_carrying = IM2TEXT(**common_kwargs)
+
+#     def forward(self, image_feature):
+#         top_token = self.prompt_top(image_feature)
+#         underneath_token = self.prompt_underneath(image_feature)
+#         shoes_token = self.prompt_shoes(image_feature)
+#         hairstyle_token = self.prompt_hairstyle(image_feature)
+#         carrying_token = self.prompt_carrying(image_feature)
+#         return top_token, underneath_token, shoes_token, hairstyle_token, carrying_token
+
 class InversionPromptLearner5(nn.Module):
     def __init__(self, clip_model):
         super().__init__()
-        common_kwargs = dict(
-            embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1,
-        )
-        self.prompt_top = IM2TEXT(**common_kwargs)
-        self.prompt_underneath = IM2TEXT(**common_kwargs)
-        self.prompt_shoes = IM2TEXT(**common_kwargs)
-        self.prompt_hairstyle = IM2TEXT(**common_kwargs)
-        self.prompt_carrying = IM2TEXT(**common_kwargs)
+        # Lấy kích thước đầu vào từ image encoder (thường là 512 cho ViT-B-16)
+        input_dim = clip_model.visual.output_dim
+        output_dim = clip_model.transformer.width  # 512
+        hidden_dim = 1024
+
+        def make_mlp():
+            return nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, output_dim)
+            )
+
+        self.prompt_top = make_mlp()
+        self.prompt_underneath = make_mlp()
+        self.prompt_shoes = make_mlp()
+        self.prompt_hairstyle = make_mlp()
+        self.prompt_carrying = make_mlp()
 
     def forward(self, image_feature):
         top_token = self.prompt_top(image_feature)
@@ -489,7 +520,8 @@ class Prompt_Cat3(_PromptCatBase):
 class Prompt_Cat5(_PromptCatBase):
     def __init__(self, num_class, dataset_name, dtype, token_embedding):
         # Use the exact prompt requested by the user.
-        ctx_init = 'A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X.'
+        # ctx_init = 'A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X.'
+        ctx_init = 'A photo of a person wearing X on top , X underneath , X hairstyle , X shoes , carrying X .'
         super().__init__(ctx_init, dtype, token_embedding, expected_x_count=5)
         self.num_class = num_class
 
