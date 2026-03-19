@@ -7,8 +7,8 @@ from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
 from torch.cuda import amp
 import torch.distributed as dist
-from torch.nn import functional as F
 from loss.supcontrast import SupConLoss
+
 
 def do_train_stage2(cfg,
              model,
@@ -19,7 +19,8 @@ def do_train_stage2(cfg,
              optimizer_center,
              scheduler,
              loss_fn,
-             num_query, local_rank):
+             num_query, local_rank,
+             precomputed_text_features=None):
     log_period = cfg.SOLVER.STAGE2.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.STAGE2.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.STAGE2.EVAL_PERIOD
@@ -35,7 +36,7 @@ def do_train_stage2(cfg,
         model.to(local_rank)
         if torch.cuda.device_count() > 1:
             print('Using {} GPUs for training'.format(torch.cuda.device_count()))
-            model = nn.DataParallel(model)  
+            model = nn.DataParallel(model)
             num_classes = model.module.num_classes
         else:
             num_classes = model.num_classes
@@ -46,73 +47,71 @@ def do_train_stage2(cfg,
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
     xent = SupConLoss(device)
-    
-    # train
-    import time
+
     from datetime import timedelta
     all_start_time = time.monotonic()
 
-    # train
-    model.eval()
+    if precomputed_text_features is not None:
+        text_features = precomputed_text_features.to(device).float()
+        logger.info(
+            "Using precomputed stage1 prototypes for stage2, shape: {}".format(tuple(text_features.shape))
+        )
+    else:
+        logger.info("No precomputed stage1 prototypes provided. Recomputing text prototypes at stage2 start.")
+        model.eval()
 
-    text_feature_sum = None
-    text_feature_count = torch.zeros(num_classes, device=device, dtype=torch.float32)
+        text_feature_sum = None
+        text_feature_count = torch.zeros(num_classes, device=device, dtype=torch.float32)
 
-    with torch.no_grad():
-        for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage2):
-            img = img.to(device)
-            target = vid.to(device)
+        with torch.no_grad():
+            for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage2):
+                img = img.to(device)
+                target = vid.to(device)
 
-            if cfg.MODEL.SIE_CAMERA:
-                target_cam = target_cam.to(device)
-            else:
-                target_cam = None
+                if cfg.MODEL.SIE_CAMERA:
+                    target_cam = target_cam.to(device)
+                else:
+                    target_cam = None
 
-            if cfg.MODEL.SIE_VIEW:
-                target_view = target_view.to(device)
-            else:
-                target_view = None
+                if cfg.MODEL.SIE_VIEW:
+                    target_view = target_view.to(device)
+                else:
+                    target_view = None
 
-            with amp.autocast(enabled=True):
-                # expected return:
-                # unique_labels, mean_prompts, mean_text_features
-                pid_list, _, mean_text_feature = model(
-                    x=img,
-                    label=target,
-                    get_text_inversion_stage2=True,
-                    cam_label=target_cam,
-                    view_label=target_view
+                with amp.autocast(enabled=True):
+                    pid_list, _, mean_text_feature = model(
+                        x=img,
+                        label=target,
+                        get_text_inversion_stage2=True,
+                        cam_label=target_cam,
+                        view_label=target_view
+                    )
+
+                pid_list = pid_list.long()
+                mean_text_feature = mean_text_feature.float()
+
+                if text_feature_sum is None:
+                    feat_dim = mean_text_feature.size(1)
+                    text_feature_sum = torch.zeros(
+                        num_classes,
+                        feat_dim,
+                        device=device,
+                        dtype=mean_text_feature.dtype
+                    )
+
+                text_feature_sum.index_add_(0, pid_list, mean_text_feature)
+                text_feature_count.index_add_(
+                    0,
+                    pid_list,
+                    torch.ones(pid_list.size(0), device=device, dtype=text_feature_sum.dtype)
                 )
 
-            pid_list = pid_list.long()
-            mean_text_feature = mean_text_feature.float()
-
-            if text_feature_sum is None:
-                feat_dim = mean_text_feature.size(1)
-                text_feature_sum = torch.zeros(
-                    num_classes, feat_dim,
-                    device=device,
-                    dtype=mean_text_feature.dtype
-                )
-
-            # accumulate mean text feature for each ID across batches
-            text_feature_sum.index_add_(
-                0,
-                pid_list,
-                mean_text_feature
-            )
-            text_feature_count.index_add_(
-                0,
-                pid_list,
-                torch.ones(pid_list.size(0), device=device, dtype=text_feature_sum.dtype)
-            )
-
-    text_features = torch.zeros_like(text_feature_sum)
-    valid_mask = text_feature_count > 0
-    text_features[valid_mask] = (
-        text_feature_sum[valid_mask] /
-        text_feature_count[valid_mask].unsqueeze(1)
-    )
+        text_features = torch.zeros_like(text_feature_sum)
+        valid_mask = text_feature_count > 0
+        text_features[valid_mask] = (
+            text_feature_sum[valid_mask] /
+            text_feature_count[valid_mask].unsqueeze(1)
+        )
 
     for epoch in range(1, epochs + 1):
         start_time = time.time()
@@ -126,23 +125,31 @@ def do_train_stage2(cfg,
         for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage2):
             optimizer.zero_grad()
             optimizer_center.zero_grad()
+
             img = img.to(device)
             target = vid.to(device)
+
             if cfg.MODEL.SIE_CAMERA:
                 target_cam = target_cam.to(device)
-            else: 
+            else:
                 target_cam = None
+
             if cfg.MODEL.SIE_VIEW:
                 target_view = target_view.to(device)
-            else: 
+            else:
                 target_view = None
+
             with amp.autocast(enabled=True):
-                score, feat, image_features = model(x = img, label = target, cam_label=target_cam, view_label=target_view)
+                score, feat, image_features = model(
+                    x=img,
+                    label=target,
+                    cam_label=target_cam,
+                    view_label=target_view
+                )
                 logits = image_features @ text_features.t()
                 loss = loss_fn(score, feat, target, target_cam, logits)
 
             scaler.scale(loss).backward()
-
             scaler.step(optimizer)
             scaler.update()
 
@@ -159,26 +166,36 @@ def do_train_stage2(cfg,
 
             torch.cuda.synchronize()
             if (n_iter + 1) % log_period == 0:
-                logger.info("Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
-                            .format(epoch, (n_iter + 1), len(train_loader_stage2),
-                                    loss_meter.avg, acc_meter.avg, scheduler.get_lr()[0]))
+                logger.info(
+                    "Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}".format(
+                        epoch, (n_iter + 1), len(train_loader_stage2),
+                        loss_meter.avg, acc_meter.avg, scheduler.get_lr()[0]
+                    )
+                )
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
         if cfg.MODEL.DIST_TRAIN:
             pass
         else:
-            logger.info("Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]"
-                    .format(epoch, time_per_batch, train_loader_stage2.batch_size / time_per_batch))
+            logger.info(
+                "Epoch {} done. Time per batch: {:.3f}[s] Speed: {:.1f}[samples/s]".format(
+                    epoch, time_per_batch, train_loader_stage2.batch_size / time_per_batch
+                )
+            )
 
         if epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                    torch.save(
+                        model.state_dict(),
+                        os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch))
+                    )
             else:
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                torch.save(
+                    model.state_dict(),
+                    os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch))
+                )
 
         if epoch % eval_period == 0:
             if cfg.MODEL.DIST_TRAIN:
@@ -189,11 +206,11 @@ def do_train_stage2(cfg,
                             img = img.to(device)
                             if cfg.MODEL.SIE_CAMERA:
                                 camids = camids.to(device)
-                            else: 
+                            else:
                                 camids = None
                             if cfg.MODEL.SIE_VIEW:
                                 target_view = target_view.to(device)
-                            else: 
+                            else:
                                 target_view = None
                             feat = model(img, cam_label=camids, view_label=target_view)
                             evaluator.update((feat, vid, camid))
@@ -210,11 +227,11 @@ def do_train_stage2(cfg,
                         img = img.to(device)
                         if cfg.MODEL.SIE_CAMERA:
                             camids = camids.to(device)
-                        else: 
+                        else:
                             camids = None
                         if cfg.MODEL.SIE_VIEW:
                             target_view = target_view.to(device)
-                        else: 
+                        else:
                             target_view = None
                         feat = model(img, cam_label=camids, view_label=target_view)
                         evaluator.update((feat, vid, camid))
@@ -229,6 +246,7 @@ def do_train_stage2(cfg,
     total_time = timedelta(seconds=all_end_time - all_start_time)
     logger.info("Total running time: {}".format(total_time))
     print(cfg.OUTPUT_DIR)
+
 
 def do_inference(cfg,
                  model,
@@ -256,16 +274,15 @@ def do_inference(cfg,
             img = img.to(device)
             if cfg.MODEL.SIE_CAMERA:
                 camids = camids.to(device)
-            else: 
+            else:
                 camids = None
             if cfg.MODEL.SIE_VIEW:
                 target_view = target_view.to(device)
-            else: 
+            else:
                 target_view = None
             feat = model(img, cam_label=camids, view_label=target_view)
             evaluator.update((feat, pid, camid))
             img_path_list.extend(imgpath)
-
 
     cmc, mAP, _, _, _, _, _ = evaluator.compute()
     logger.info("Validation Results ")

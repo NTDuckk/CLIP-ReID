@@ -35,13 +35,6 @@ def do_train_stage1(cfg,
 
     core_model = model.module if isinstance(model, nn.DataParallel) else model
 
-    # Safety freeze here too, even if optimizer already filters params
-    # for name, param in core_model.named_parameters():
-    #     if "inversion_prompt_learner" in name:
-    #         param.requires_grad_(True)
-    #     else:
-    #         param.requires_grad_(False)
-
     loss_meter = AverageMeter()
     loss_i2t_meter = AverageMeter()
     loss_t2i_meter = AverageMeter()
@@ -60,16 +53,6 @@ def do_train_stage1(cfg,
         scheduler.step(epoch)
         model.train()
 
-        # Keep frozen modules in eval mode so BN/dropout do not drift
-        # if hasattr(core_model, "image_encoder"):
-        #     core_model.image_encoder.eval()
-        # if hasattr(core_model, "text_encoder"):
-        #     core_model.text_encoder.eval()
-        # if hasattr(core_model, "prompt_learner"):
-        #     core_model.prompt_learner.eval()
-        # if hasattr(core_model, "inversion_prompt_learner"):
-        #     core_model.inversion_prompt_learner.train()
-
         for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage1):
             optimizer.zero_grad()
 
@@ -87,11 +70,9 @@ def do_train_stage1(cfg,
                     view_label=target_view
                 )
 
-                # Important: SupConLoss here uses raw dot product, so normalize first
                 image_feature = F.normalize(image_feature.float(), dim=1)
                 text_features = F.normalize(text_features.float(), dim=1)
 
-                # SupConLoss treats the 1st arg as anchors and the 2nd arg as the comparison bank
                 loss_i2t = xent(image_feature, text_features, target, target)
                 loss_t2i = xent(text_features, image_feature, target, target)
                 loss = loss_i2t + loss_t2i
@@ -138,6 +119,75 @@ def do_train_stage1(cfg,
                     os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_stage1_{}.pth".format(epoch))
                 )
 
+    logger.info("Computing averaged text features per ID from stage1 (old prototype flow)...")
+    model.eval()
+
+    if isinstance(model, nn.DataParallel):
+        num_classes = model.module.num_classes
+    else:
+        num_classes = model.num_classes
+
+    text_feature_sum = None
+    text_feature_count = torch.zeros(num_classes, device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage1):
+            img = img.to(device, non_blocking=True)
+            target = vid.to(device, non_blocking=True).long()
+
+            if cfg.MODEL.SIE_CAMERA:
+                target_cam = target_cam.to(device, non_blocking=True)
+            else:
+                target_cam = None
+
+            if cfg.MODEL.SIE_VIEW:
+                target_view = target_view.to(device, non_blocking=True)
+            else:
+                target_view = None
+
+            with amp.autocast(enabled=True):
+                _, text_features = model(
+                    x=img,
+                    label=target,
+                    get_text_inversion=True,
+                    cam_label=target_cam,
+                    view_label=target_view
+                )
+
+            text_features = text_features.float()
+
+            if text_feature_sum is None:
+                feat_dim = text_features.size(1)
+                text_feature_sum = torch.zeros(
+                    num_classes,
+                    feat_dim,
+                    device=device,
+                    dtype=text_features.dtype
+                )
+
+            text_feature_sum.index_add_(0, target, text_features)
+            text_feature_count.index_add_(
+                0,
+                target,
+                torch.ones(target.size(0), device=device, dtype=text_feature_sum.dtype)
+            )
+
+    if text_feature_sum is None:
+        raise RuntimeError("Failed to build stage1 prototypes: no text features were accumulated.")
+
+    avg_text_features = torch.zeros_like(text_feature_sum)
+    valid_mask = text_feature_count > 0
+    avg_text_features[valid_mask] = (
+        text_feature_sum[valid_mask] /
+        text_feature_count[valid_mask].unsqueeze(1)
+    )
+
+    logger.info("Built stage1 prototypes for {} / {} classes".format(
+        int(valid_mask.sum().item()), num_classes
+    ))
+
     all_end_time = time.monotonic()
     total_time = timedelta(seconds=all_end_time - all_start_time)
     logger.info("Stage1 running time: {}".format(total_time))
+
+    return avg_text_features.detach()

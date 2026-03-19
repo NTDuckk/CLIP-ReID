@@ -14,6 +14,7 @@ import os
 import argparse
 from config import cfg
 
+
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -22,6 +23,7 @@ def set_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
+
 
 if __name__ == '__main__':
 
@@ -65,15 +67,21 @@ if __name__ == '__main__':
 
     train_loader_stage2, train_loader_stage1, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
 
-    model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num = view_num)
+    model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num=view_num)
 
     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)
 
     optimizer_1stage = make_optimizer_1stage(cfg, model)
-    scheduler_1stage = create_scheduler(optimizer_1stage, num_epochs = cfg.SOLVER.STAGE1.MAX_EPOCHS, lr_min = cfg.SOLVER.STAGE1.LR_MIN, \
-                        warmup_lr_init = cfg.SOLVER.STAGE1.WARMUP_LR_INIT, warmup_t = cfg.SOLVER.STAGE1.WARMUP_EPOCHS, noise_range = None)
+    scheduler_1stage = create_scheduler(
+        optimizer_1stage,
+        num_epochs=cfg.SOLVER.STAGE1.MAX_EPOCHS,
+        lr_min=cfg.SOLVER.STAGE1.LR_MIN,
+        warmup_lr_init=cfg.SOLVER.STAGE1.WARMUP_LR_INIT,
+        warmup_t=cfg.SOLVER.STAGE1.WARMUP_EPOCHS,
+        noise_range=None
+    )
 
-    do_train_stage1(
+    text_features = do_train_stage1(
         cfg,
         model,
         train_loader_stage1,
@@ -83,8 +91,14 @@ if __name__ == '__main__':
     )
 
     optimizer_2stage, optimizer_center_2stage = make_optimizer_2stage(cfg, model, center_criterion)
-    scheduler_2stage = WarmupMultiStepLR(optimizer_2stage, cfg.SOLVER.STAGE2.STEPS, cfg.SOLVER.STAGE2.GAMMA, cfg.SOLVER.STAGE2.WARMUP_FACTOR,
-                                  cfg.SOLVER.STAGE2.WARMUP_ITERS, cfg.SOLVER.STAGE2.WARMUP_METHOD)
+    scheduler_2stage = WarmupMultiStepLR(
+        optimizer_2stage,
+        cfg.SOLVER.STAGE2.STEPS,
+        cfg.SOLVER.STAGE2.GAMMA,
+        cfg.SOLVER.STAGE2.WARMUP_FACTOR,
+        cfg.SOLVER.STAGE2.WARMUP_ITERS,
+        cfg.SOLVER.STAGE2.WARMUP_METHOD
+    )
 
     do_train_stage2(
         cfg,
@@ -96,5 +110,7 @@ if __name__ == '__main__':
         optimizer_center_2stage,
         scheduler_2stage,
         loss_func,
-        num_query, args.local_rank
+        num_query,
+        args.local_rank,
+        precomputed_text_features=text_features
     )
