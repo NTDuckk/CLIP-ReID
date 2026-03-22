@@ -11,6 +11,7 @@ MODEL:
   # SIE_CAMERA: True
   # SIE_COE : 1.0
   ATT_FLAG: 5
+  
 INPUT:
   SIZE_TRAIN: [256, 128]
   SIZE_TEST: [256, 128]
