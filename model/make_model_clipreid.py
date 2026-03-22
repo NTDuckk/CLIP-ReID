@@ -5,7 +5,6 @@ from .clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 _tokenizer = _Tokenizer()
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
-
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
@@ -21,14 +20,12 @@ def weights_init_kaiming(m):
             nn.init.constant_(m.weight, 1.0)
             nn.init.constant_(m.bias, 0.0)
 
-
 def weights_init_classifier(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
         nn.init.normal_(m.weight, std=0.001)
         if m.bias:
             nn.init.constant_(m.bias, 0.0)
-
 
 class TextEncoder(nn.Module):
     def __init__(self, clip_model):
@@ -53,7 +50,7 @@ class TextEncoder(nn.Module):
 
 
 class IM2TEXT(nn.Module):
-    def __init__(self, embed_dim=512, middle_dim=512, output_dim=512, n_layer=2, dropout=0.1):
+    def __init__(self, embed_dim=512, middle_dim=512, output_dim=512, n_layer=3, dropout=0.1):
         super().__init__()
         self.fc_out = nn.Linear(middle_dim, output_dim)
         layers = []
@@ -72,6 +69,28 @@ class IM2TEXT(nn.Module):
             x = layer(x)
         return self.fc_out(x)
 
+
+def make_model(cfg, num_class, camera_num, view_num):
+    model = build_transformer(num_class, camera_num, view_num, cfg)
+    return model
+
+from .clip import clip
+
+def load_clip_to_cpu(backbone_name, h_resolution, w_resolution, vision_stride_size):
+    url = clip._MODELS[backbone_name]
+    model_path = clip._download(url)
+
+    try:
+        # loading JIT archive
+        model = torch.jit.load(model_path, map_location="cpu").eval()
+        state_dict = None
+
+    except RuntimeError:
+        state_dict = torch.load(model_path, map_location="cpu")
+
+    model = clip.build_model(state_dict or model.state_dict(), h_resolution, w_resolution, vision_stride_size)
+
+    return model
 
 class InversionPromptLearner3(nn.Module):
     def __init__(self, clip_model):
@@ -99,36 +118,176 @@ class InversionPromptLearner3(nn.Module):
         )
 
     def forward(self, image_feature):
-        clothes_token = self.prompt_clothes(image_feature)
-        hairstyle_token = self.prompt_hairstyle(image_feature)
-        carrying_token = self.prompt_carrying(image_feature)
+        clothes_token = self.prompt_clothes(image_feature).unsqueeze(1)
+        hairstyle_token = self.prompt_hairstyle(image_feature).unsqueeze(1)
+        carrying_token = self.prompt_carrying(image_feature).unsqueeze(1)
         return clothes_token, hairstyle_token, carrying_token
-
 
 class InversionPromptLearner5(nn.Module):
     def __init__(self, clip_model):
         super().__init__()
-        common_kwargs = dict(
+        self.prompt_top = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
             middle_dim=512,
             output_dim=clip_model.transformer.width,
             n_layer=3,
-            dropout=0.1,
+            dropout=0.1
         )
-        self.prompt_top = IM2TEXT(**common_kwargs)
-        self.prompt_underneath = IM2TEXT(**common_kwargs)
-        self.prompt_shoes = IM2TEXT(**common_kwargs)
-        self.prompt_hairstyle = IM2TEXT(**common_kwargs)
-        self.prompt_carrying = IM2TEXT(**common_kwargs)
-
+        self.prompt_underneath = IM2TEXT(
+            embed_dim=clip_model.visual.output_dim,
+            middle_dim=512,
+            output_dim=clip_model.transformer.width,
+            n_layer=3,
+            dropout=0.1
+        )
+        self.prompt_shoes = IM2TEXT(
+            embed_dim=clip_model.visual.output_dim,
+            middle_dim=512,
+            output_dim=clip_model.transformer.width,
+            n_layer=3,
+            dropout=0.1
+        )
+        self.prompt_hairstyle = IM2TEXT(
+            embed_dim=clip_model.visual.output_dim,
+            middle_dim=512,
+            output_dim=clip_model.transformer.width,
+            n_layer=3,
+            dropout=0.1
+        )
+        self.prompt_carrying = IM2TEXT(
+            embed_dim=clip_model.visual.output_dim,
+            middle_dim=512,
+            output_dim=clip_model.transformer.width,
+            n_layer=3,
+            dropout=0.1
+        )
+        
     def forward(self, image_feature):
-        top_token = self.prompt_top(image_feature)
-        underneath_token = self.prompt_underneath(image_feature)
-        shoes_token = self.prompt_shoes(image_feature)
-        hairstyle_token = self.prompt_hairstyle(image_feature)
-        carrying_token = self.prompt_carrying(image_feature)
+        top_token = self.prompt_top(image_feature).unsqueeze(1)
+        underneath_token = self.prompt_underneath(image_feature).unsqueeze(1)
+        shoes_token = self.prompt_shoes(image_feature).unsqueeze(1)
+        hairstyle_token = self.prompt_hairstyle(image_feature).unsqueeze(1)
+        carrying_token = self.prompt_carrying(image_feature).unsqueeze(1)
         return top_token, underneath_token, shoes_token, hairstyle_token, carrying_token
 
+class Prompt_Cat3(nn.Module):
+    """
+    Prompt learner for 3 attributes: clothes, hairstyle, carrying.
+    Uses a fixed sentence with 3 X placeholders, and inserts attribute tokens at those positions.
+    """
+    def __init__(self, dataset_name, dtype, token_embedding):
+        super().__init__()
+        if dataset_name == "VehicleID" or dataset_name == "veri":
+            ctx_init = "A photo of a vehicle wearing X clothes, having X hairstyle and carrying X."
+        else:
+            ctx_init = "A photo of a person wearing X clothes, having X hairstyle and carrying X."
+
+        ctx_dim = 512
+        ctx_init = ctx_init.replace("_", " ")
+        tokenized_prompts = clip.tokenize(ctx_init).cuda()
+        with torch.no_grad():
+            embedding = token_embedding(tokenized_prompts).type(dtype)
+        self.tokenized_prompts = tokenized_prompts
+
+        # Find positions of X tokens (token id 343 in CLIP)
+        x_token_id = 343
+        token_ids = tokenized_prompts[0].tolist()
+        x_positions = [i for i, t in enumerate(token_ids) if t == x_token_id]
+        if len(x_positions) != 3:
+            raise RuntimeError(f"Expected 3 X tokens, found {len(x_positions)} at {x_positions}")
+
+        # Register buffer segments
+        self.register_buffer("token_prefix_0", embedding[:, :x_positions[0], :])        # before first X
+        self.register_buffer("token_prefix_1", embedding[:, x_positions[0]+1:x_positions[1], :])  # between X1 and X2
+        self.register_buffer("token_prefix_2", embedding[:, x_positions[1]+1:x_positions[2], :])  # between X2 and X3
+        self.register_buffer("token_suffix", embedding[:, x_positions[2]+1:, :])                 # after last X
+
+    def forward(self, label, prom_list):
+        # prom_list: list of 3 tensors, each shape [B, 1, D] or [B, D]
+        if prom_list is None or len(prom_list) != 3:
+            raise ValueError("prom_list must be a list/tuple of length 3")
+
+        b = label.shape[0]
+        formatted = []
+        for i, token in enumerate(prom_list):
+            if token.dim() == 2:
+                token = token.unsqueeze(1)
+            elif token.dim() != 3:
+                raise ValueError(f"prom_list[{i}] must be 2D or 3D, got {token.dim()}D")
+            if token.size(2) != self.token_prefix_0.size(2):
+                raise ValueError(f"prom_list[{i}] last dim must be {self.token_prefix_0.size(2)}")
+            formatted.append(token.to(device=self.token_prefix_0.device, dtype=self.token_prefix_0.dtype))
+
+        # Build prompt sequence
+        pieces = [self.token_prefix_0.expand(b, -1, -1)]
+        for i, token in enumerate(formatted):
+            pieces.append(token)
+            if i < len(formatted) - 1:
+                pieces.append(getattr(self, f"token_prefix_{i+1}").expand(b, -1, -1))
+        pieces.append(self.token_suffix.expand(b, -1, -1))
+
+        prompts = torch.cat(pieces, dim=1)
+        return prompts
+
+class Prompt_Cat5(nn.Module):
+    """
+    Prompt learner for 5 attributes: top, underneath, shoes, hairstyle, carrying.
+    Uses a fixed sentence with 5 X placeholders, and inserts attribute tokens at those positions.
+    """
+    def __init__(self, dataset_name, dtype, token_embedding):
+        super().__init__()
+        if dataset_name == "VehicleID" or dataset_name == "veri":
+            ctx_init = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+        else:
+            ctx_init = "A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+
+        ctx_dim = 512
+        ctx_init = ctx_init.replace("_", " ")
+        tokenized_prompts = clip.tokenize(ctx_init).cuda()
+        with torch.no_grad():
+            embedding = token_embedding(tokenized_prompts).type(dtype)
+        self.tokenized_prompts = tokenized_prompts
+
+        # Find positions of X tokens
+        x_token_id = 343
+        token_ids = tokenized_prompts[0].tolist()
+        x_positions = [i for i, t in enumerate(token_ids) if t == x_token_id]
+        if len(x_positions) != 5:
+            raise RuntimeError(f"Expected 5 X tokens, found {len(x_positions)} at {x_positions}")
+
+        # Register buffer segments
+        self.register_buffer("token_prefix_0", embedding[:, :x_positions[0], :])        # before first X
+        self.register_buffer("token_prefix_1", embedding[:, x_positions[0]+1:x_positions[1], :])  # between X1 and X2
+        self.register_buffer("token_prefix_2", embedding[:, x_positions[1]+1:x_positions[2], :])  # between X2 and X3
+        self.register_buffer("token_prefix_3", embedding[:, x_positions[2]+1:x_positions[3], :])  # between X3 and X4
+        self.register_buffer("token_prefix_4", embedding[:, x_positions[3]+1:x_positions[4], :])  # between X4 and X5
+        self.register_buffer("token_suffix", embedding[:, x_positions[4]+1:, :])                 # after last X
+    def forward(self, label, prom_list):
+        # prom_list: list of 5 tensors, each shape [B, 1, D] or [B, D]
+        if prom_list is None or len(prom_list) != 5:
+            raise ValueError("prom_list must be a list/tuple of length 5")
+
+        b = label.shape[0]
+        formatted = []
+        for i, token in enumerate(prom_list):
+            if token.dim() == 2:
+                token = token.unsqueeze(1)
+            elif token.dim() != 3:
+                raise ValueError(f"prom_list[{i}] must be 2D or 3D, got {token.dim()}D")
+            if token.size(2) != self.token_prefix_0.size(2):
+                raise ValueError(f"prom_list[{i}] last dim must be {self.token_prefix_0.size(2)}")
+            formatted.append(token.to(device=self.token_prefix_0.device, dtype=self.token_prefix_0.dtype))
+
+        # Build prompt sequence
+        pieces = [self.token_prefix_0.expand(b, -1, -1)]
+        for i, token in enumerate(formatted):
+            pieces.append(token)
+            if i < len(formatted) - 1:
+                pieces.append(getattr(self, f"token_prefix_{i+1}").expand(b, -1, -1))
+        pieces.append(self.token_suffix.expand(b, -1, -1))
+
+        prompts = torch.cat(pieces, dim=1)
+        return prompts
 
 class build_transformer(nn.Module):
     def __init__(self, num_classes, camera_num, view_num, cfg):
@@ -149,7 +308,7 @@ class build_transformer(nn.Module):
         self.sie_coe = cfg.MODEL.SIE_COE
         # ensure attribute exists even if SIE flags are disabled
         self.cv_embed = None
-        self.att_flag = _resolve_att_flag(cfg)
+        self.att_flag = cfg.ATT_FLAG
 
         self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
         self.classifier.apply(weights_init_classifier)
@@ -186,10 +345,10 @@ class build_transformer(nn.Module):
 
         dataset_name = cfg.DATASETS.NAMES
         if self.att_flag == 3:
-            self.prompt_learner = Prompt_Cat3(num_classes, dataset_name, clip_model.dtype, clip_model.token_embedding)
+            self.prompt_learner = Prompt_Cat3(dataset_name, clip_model.dtype, clip_model.token_embedding)
             self.inversion_prompt_learner = InversionPromptLearner3(clip_model)
         elif self.att_flag == 5:
-            self.prompt_learner = Prompt_Cat5(num_classes, dataset_name, clip_model.dtype, clip_model.token_embedding)
+            self.prompt_learner = Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
             self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
         else:
             raise ValueError(f"att_flag must be 3 or 5, but got {self.att_flag}")
@@ -203,7 +362,7 @@ class build_transformer(nn.Module):
         get_image=False,
         get_text=False,
         get_text_inversion=False,
-        get_text_inversion_stage2=False,
+        image_features_for_inversion = None,
         cam_label=None,
         view_label=None,
         prom_list=None
@@ -213,88 +372,12 @@ class build_transformer(nn.Module):
             text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
             return text_features
 
-        if get_text_inversion is True:
-            if self.model_name == 'RN50':
-                image_features_last, image_features, image_features_proj = self.image_encoder(x)
-                image_feature = image_features_proj[0]
-
-            elif self.model_name == 'ViT-B-16':
-                if self.cv_embed is not None and cam_label is not None and view_label is not None:
-                    cv_embed = self.sie_coe * self.cv_embed[cam_label * self.view_num + view_label]
-                elif self.cv_embed is not None and cam_label is not None:
-                    cv_embed = self.sie_coe * self.cv_embed[cam_label]
-                elif self.cv_embed is not None and view_label is not None:
-                    cv_embed = self.sie_coe * self.cv_embed[view_label]
-                else:
-                    cv_embed = None
-
-                image_features_last, image_features, image_features_proj = self.image_encoder(x, cv_embed)
-                image_feature = image_features_proj[:, 0]
-
-            prom_list = list(self.inversion_prompt_learner(image_feature))
-            prompts = self.prompt_learner(label, prom_list)
-            print("example stage1 22-3")
-            print(prompts[0])
+        if get_text_inversion == True:
+            prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
+            prompts = self.prompt_learner(prom_list)
             text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
 
-            return image_feature, text_features
-
-        if get_text_inversion_stage2 is True:
-            if label is None:
-                raise ValueError("get_text_inversion_stage2=True requires label to aggregate prompts/text by ID")
-
-            if self.model_name == 'RN50':
-                image_features_last, image_features, image_features_proj = self.image_encoder(x)
-                image_feature = image_features_proj[0]
-
-            elif self.model_name == 'ViT-B-16':
-                if self.cv_embed is not None and cam_label is not None and view_label is not None:
-                    cv_embed = self.sie_coe * self.cv_embed[cam_label * self.view_num + view_label]
-                elif self.cv_embed is not None and cam_label is not None:
-                    cv_embed = self.sie_coe * self.cv_embed[cam_label]
-                elif self.cv_embed is not None and view_label is not None:
-                    cv_embed = self.sie_coe * self.cv_embed[view_label]
-                else:
-                    cv_embed = None
-
-                image_features_last, image_features, image_features_proj = self.image_encoder(x, cv_embed)
-                image_feature = image_features_proj[:, 0]
-
-            # per-image inversion tokens (supports 3 or 5 attributes)
-            prom_list = list(self.inversion_prompt_learner(image_feature))
-
-            # per-image prompts
-            prompts = self.prompt_learner(label, prom_list)
-
-            # per-image text features
-            text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
-
-            # aggregate by ID inside the current batch
-            unique_labels = torch.unique(label, sorted=True)
-
-            mean_prompts = []
-            mean_text_features = []
-
-            for pid in unique_labels:
-                mask = (label == pid)
-
-                # mean prompt embedding of this ID: [L, C]
-                pid_prompt = prompts[mask].mean(dim=0)
-
-                # mean text feature of this ID: [C]
-                pid_text_feature = text_features[mask].mean(dim=0)
-
-                mean_prompts.append(pid_prompt)
-                mean_text_features.append(pid_text_feature)
-
-            # [num_unique_ids, L, C]
-            mean_prompts = torch.stack(mean_prompts, dim=0)
-
-            # [num_unique_ids, C]
-            mean_text_features = torch.stack(mean_text_features, dim=0)
-
-            # return prompt embeddings + mean text feature for each ID
-            return unique_labels, mean_prompts, mean_text_features
+            return text_features
 
         if get_image is True:
             if self.model_name == 'RN50':
@@ -363,163 +446,120 @@ class build_transformer(nn.Module):
         print('Loading pretrained model for finetuning from {}'.format(model_path))
 
 
-def make_model(cfg, num_class, camera_num, view_num):
-    model = build_transformer(num_class, camera_num, view_num, cfg)
-    return model
+# class _PromptCatBase(nn.Module):
+#     def __init__(self, ctx_init, dtype, token_embedding, expected_x_count):
+#         super().__init__()
+#         self.ctx_dim = 512
+#         self.dtype = dtype
+
+#         ctx_init = ctx_init.replace('_', ' ')
+#         tokenized_prompts = clip.tokenize(ctx_init).cuda()
+
+#         with torch.no_grad():
+#             embedding = token_embedding(tokenized_prompts).type(dtype)
+
+#         self.tokenized_prompts = tokenized_prompts
+
+#         x_token_ids = set()
+#         x_token_ids.add(int(clip.tokenize('X')[0, 1].item()))
+#         x_token_ids.add(int(clip.tokenize(' X')[0, 1].item()))
+
+#         token_ids = tokenized_prompts[0].tolist()
+#         x_pos = [i for i, t in enumerate(token_ids) if t in x_token_ids]
+
+#         if len(x_pos) != expected_x_count:
+#             raise RuntimeError(
+#                 f'Expected exactly {expected_x_count} X tokens, but found {len(x_pos)} at positions {x_pos}'
+#             )
+
+#         self.register_buffer('token_prefix', embedding[:, :x_pos[0], :])
+#         for idx in range(expected_x_count - 1):
+#             self.register_buffer(
+#                 f'token_mid_{idx + 1}',
+#                 embedding[:, x_pos[idx] + 1:x_pos[idx + 1], :]
+#             )
+#         self.register_buffer('token_suffix', embedding[:, x_pos[-1] + 1:, :])
+#         self.expected_x_count = expected_x_count
+
+#     def _format_prompt_token(self, p, name):
+#         if p.dim() == 2:
+#             p = p.unsqueeze(1)  # [B, C] -> [B, 1, C]
+
+#         if p.dim() != 3:
+#             raise ValueError(f'{name} must have shape [B, C] or [B, 1, C], but got {tuple(p.shape)}')
+
+#         if p.size(-1) != self.ctx_dim:
+#             raise ValueError(f'{name} last dim must be {self.ctx_dim}, but got {p.size(-1)}')
+
+#         return p.to(device=self.token_prefix.device, dtype=self.token_prefix.dtype)
+
+# class Prompt_Cat3(_PromptCatBase):
+#     def __init__(self, num_class, dataset_name, dtype, token_embedding):
+#         if dataset_name == 'VehicleID' or dataset_name == 'veri':
+#             ctx_init = 'A photo of a vehicle wearing X clothes, having X hairstyle and carrying X.'
+#         else:
+#             ctx_init = 'A photo of a person wearing X clothes, having X hairstyle and carrying X.'
+
+#         super().__init__(ctx_init, dtype, token_embedding, expected_x_count=3)
+#         self.num_class = num_class
+
+#     def forward(self, label, prom_list):
+#         # label is kept for compatibility with the existing interface
+#         if prom_list is None:
+#             raise ValueError('Prompt_Cat3 requires prom_list=[clothes_token, hairstyle_token, carrying_token]')
+
+#         if not isinstance(prom_list, (list, tuple)) or len(prom_list) != 3:
+#             raise ValueError('prom_list must be a list/tuple of length 3 for Prompt_Cat3')
+
+#         tokens = [
+#             self._format_prompt_token(prom_list[0], 'clothes_token'),
+#             self._format_prompt_token(prom_list[1], 'hairstyle_token'),
+#             self._format_prompt_token(prom_list[2], 'carrying_token'),
+#         ]
+
+#         b = tokens[0].shape[0]
+#         pieces = [self.token_prefix.expand(b, -1, -1)]
+#         for idx, token in enumerate(tokens, start=1):
+#             pieces.append(token)
+#             if idx < len(tokens):
+#                 pieces.append(getattr(self, f'token_mid_{idx}').expand(b, -1, -1))
+#         pieces.append(self.token_suffix.expand(b, -1, -1))
+
+#         prompts = torch.cat(pieces, dim=1)
+#         return prompts
+
+# class Prompt_Cat5(_PromptCatBase):
+#     def __init__(self, num_class, dataset_name, dtype, token_embedding):
+#         # Use the exact prompt requested by the user.
+#         ctx_init = 'A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X.'
+#         super().__init__(ctx_init, dtype, token_embedding, expected_x_count=5)
+#         self.num_class = num_class
+
+#     def forward(self, label, prom_list):
+#         # label is kept for compatibility with the existing interface
+#         if prom_list is None:
+#             raise ValueError(
+#                 'Prompt_Cat5 requires prom_list=[top_token, underneath_token, shoes_token, hairstyle_token, carrying_token]'
+#             )
+
+#         if not isinstance(prom_list, (list, tuple)) or len(prom_list) != 5:
+#             raise ValueError('prom_list must be a list/tuple of length 5 for Prompt_Cat5')
+
+#         token_names = ['top_token', 'underneath_token', 'shoes_token', 'hairstyle_token', 'carrying_token']
+#         tokens = [self._format_prompt_token(token, name) for token, name in zip(prom_list, token_names)]
+
+#         b = tokens[0].shape[0]
+#         pieces = [self.token_prefix.expand(b, -1, -1)]
+#         for idx, token in enumerate(tokens, start=1):
+#             pieces.append(token)
+#             if idx < len(tokens):
+#                 pieces.append(getattr(self, f'token_mid_{idx}').expand(b, -1, -1))
+#         pieces.append(self.token_suffix.expand(b, -1, -1))
+
+#         prompts = torch.cat(pieces, dim=1)
+#         return prompts
 
 
-from .clip import clip
-
-def load_clip_to_cpu(backbone_name, h_resolution, w_resolution, vision_stride_size):
-    url = clip._MODELS[backbone_name]
-    model_path = clip._download(url)
-
-    try:
-        # loading JIT archive
-        model = torch.jit.load(model_path, map_location="cpu").eval()
-        state_dict = None
-
-    except RuntimeError:
-        state_dict = torch.load(model_path, map_location="cpu")
-
-    model = clip.build_model(state_dict or model.state_dict(), h_resolution, w_resolution, vision_stride_size)
-
-    return model
-
-
-def _resolve_att_flag(cfg):
-    candidates = [
-        lambda x: getattr(getattr(x, 'MODEL', None), 'ATT_FLAG', None),
-        lambda x: getattr(getattr(x, 'MODEL', None), 'att_flag', None),
-        lambda x: getattr(x, 'ATT_FLAG', None),
-        lambda x: getattr(x, 'att_flag', None),
-    ]
-    for getter in candidates:
-        value = getter(cfg)
-        if value is not None:
-            value = int(value)
-            if value not in (3, 5):
-                raise ValueError(f'att_flag must be 3 or 5, but got {value}')
-            return value
-    return 3
-
-
-class _PromptCatBase(nn.Module):
-    def __init__(self, ctx_init, dtype, token_embedding, expected_x_count):
-        super().__init__()
-        self.ctx_dim = 512
-        self.dtype = dtype
-
-        ctx_init = ctx_init.replace('_', ' ')
-        tokenized_prompts = clip.tokenize(ctx_init).cuda()
-
-        with torch.no_grad():
-            embedding = token_embedding(tokenized_prompts).type(dtype)
-
-        self.tokenized_prompts = tokenized_prompts
-
-        x_token_ids = set()
-        x_token_ids.add(int(clip.tokenize('X')[0, 1].item()))
-        x_token_ids.add(int(clip.tokenize(' X')[0, 1].item()))
-
-        token_ids = tokenized_prompts[0].tolist()
-        x_pos = [i for i, t in enumerate(token_ids) if t in x_token_ids]
-
-        if len(x_pos) != expected_x_count:
-            raise RuntimeError(
-                f'Expected exactly {expected_x_count} X tokens, but found {len(x_pos)} at positions {x_pos}'
-            )
-
-        self.register_buffer('token_prefix', embedding[:, :x_pos[0], :])
-        for idx in range(expected_x_count - 1):
-            self.register_buffer(
-                f'token_mid_{idx + 1}',
-                embedding[:, x_pos[idx] + 1:x_pos[idx + 1], :]
-            )
-        self.register_buffer('token_suffix', embedding[:, x_pos[-1] + 1:, :])
-        self.expected_x_count = expected_x_count
-
-    def _format_prompt_token(self, p, name):
-        if p.dim() == 2:
-            p = p.unsqueeze(1)  # [B, C] -> [B, 1, C]
-
-        if p.dim() != 3:
-            raise ValueError(f'{name} must have shape [B, C] or [B, 1, C], but got {tuple(p.shape)}')
-
-        if p.size(-1) != self.ctx_dim:
-            raise ValueError(f'{name} last dim must be {self.ctx_dim}, but got {p.size(-1)}')
-
-        return p.to(device=self.token_prefix.device, dtype=self.token_prefix.dtype)
-
-
-class Prompt_Cat3(_PromptCatBase):
-    def __init__(self, num_class, dataset_name, dtype, token_embedding):
-        if dataset_name == 'VehicleID' or dataset_name == 'veri':
-            ctx_init = 'A photo of a vehicle wearing X clothes, having X hairstyle and carrying X.'
-        else:
-            ctx_init = 'A photo of a person wearing X clothes, having X hairstyle and carrying X.'
-
-        super().__init__(ctx_init, dtype, token_embedding, expected_x_count=3)
-        self.num_class = num_class
-
-    def forward(self, label, prom_list):
-        # label is kept for compatibility with the existing interface
-        if prom_list is None:
-            raise ValueError('Prompt_Cat3 requires prom_list=[clothes_token, hairstyle_token, carrying_token]')
-
-        if not isinstance(prom_list, (list, tuple)) or len(prom_list) != 3:
-            raise ValueError('prom_list must be a list/tuple of length 3 for Prompt_Cat3')
-
-        tokens = [
-            self._format_prompt_token(prom_list[0], 'clothes_token'),
-            self._format_prompt_token(prom_list[1], 'hairstyle_token'),
-            self._format_prompt_token(prom_list[2], 'carrying_token'),
-        ]
-
-        b = tokens[0].shape[0]
-        pieces = [self.token_prefix.expand(b, -1, -1)]
-        for idx, token in enumerate(tokens, start=1):
-            pieces.append(token)
-            if idx < len(tokens):
-                pieces.append(getattr(self, f'token_mid_{idx}').expand(b, -1, -1))
-        pieces.append(self.token_suffix.expand(b, -1, -1))
-
-        prompts = torch.cat(pieces, dim=1)
-        return prompts
-
-
-class Prompt_Cat5(_PromptCatBase):
-    def __init__(self, num_class, dataset_name, dtype, token_embedding):
-        # Use the exact prompt requested by the user.
-        ctx_init = 'A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X.'
-        super().__init__(ctx_init, dtype, token_embedding, expected_x_count=5)
-        self.num_class = num_class
-
-    def forward(self, label, prom_list):
-        # label is kept for compatibility with the existing interface
-        if prom_list is None:
-            raise ValueError(
-                'Prompt_Cat5 requires prom_list=[top_token, underneath_token, shoes_token, hairstyle_token, carrying_token]'
-            )
-
-        if not isinstance(prom_list, (list, tuple)) or len(prom_list) != 5:
-            raise ValueError('prom_list must be a list/tuple of length 5 for Prompt_Cat5')
-
-        token_names = ['top_token', 'underneath_token', 'shoes_token', 'hairstyle_token', 'carrying_token']
-        tokens = [self._format_prompt_token(token, name) for token, name in zip(prom_list, token_names)]
-
-        b = tokens[0].shape[0]
-        pieces = [self.token_prefix.expand(b, -1, -1)]
-        for idx, token in enumerate(tokens, start=1):
-            pieces.append(token)
-            if idx < len(tokens):
-                pieces.append(getattr(self, f'token_mid_{idx}').expand(b, -1, -1))
-        pieces.append(self.token_suffix.expand(b, -1, -1))
-
-        prompts = torch.cat(pieces, dim=1)
-        return prompts
-
-
-# Backward-compatible aliases (optional but helps older imports keep working)
-InversionPromptLearner = InversionPromptLearner3
-Prompt_Cat = Prompt_Cat3
+# # Backward-compatible aliases (optional but helps older imports keep working)
+# InversionPromptLearner = InversionPromptLearner3
+# Prompt_Cat = Prompt_Cat3

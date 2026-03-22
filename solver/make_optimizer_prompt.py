@@ -1,13 +1,8 @@
 import torch
 
 def make_optimizer_1stage(cfg, model):
-    # Freeze everything first
-    for _, value in model.named_parameters():
-        value.requires_grad_(False)
-
     params = []
     keys = []
-
     for key, value in model.named_parameters():
         # Only optimize the 3 IM2TEXT branches inside inversion_prompt_learner
         if "inversion_prompt_learner" in key:
@@ -16,9 +11,6 @@ def make_optimizer_1stage(cfg, model):
             weight_decay = cfg.SOLVER.STAGE1.WEIGHT_DECAY
             params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
             keys += [key]
-
-    if len(params) == 0:
-        raise RuntimeError("No trainable parameters found for stage1 under 'inversion_prompt_learner'")
 
     print("Stage1 trainable params:")
     for key in keys:
@@ -36,7 +28,6 @@ def make_optimizer_1stage(cfg, model):
         )
     else:
         optimizer = getattr(torch.optim, cfg.SOLVER.STAGE1.OPTIMIZER_NAME)(params)
-
     return optimizer
 
 
@@ -100,19 +91,13 @@ def make_optimizer_1stage(cfg, model):
 #     return optimizer
 
 def make_optimizer_2stage(cfg, model, center_criterion):
-    for _, value in model.named_parameters():
-        value.requires_grad_(True)
     params = []
     keys = []
     for key, value in model.named_parameters():
         if "text_encoder" in key:
             value.requires_grad_(False)
-            continue
-        # freeze `prompt_learner` but keep `inversion_prompt_learner` trainable
+            continue   
         if "prompt_learner" in key:
-            value.requires_grad_(False)
-            continue
-        if "inversion_prompt_learner" in key:
             value.requires_grad_(False)
             continue
         if not value.requires_grad:
