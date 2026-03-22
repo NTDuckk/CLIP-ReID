@@ -356,8 +356,8 @@ class Prompt_Cat5(nn.Module):
         if dataset_name == "VehicleID" or dataset_name == "veri":
             template = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
         else:
-            template = "A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
-
+            template = "A photo of a person wearing X on top , X underneath , X hairstyle , X shoes , carrying X ."
+                            
         self.num_attributes = 5
 
         tokenized_prompts = clip.tokenize(template).cuda()
