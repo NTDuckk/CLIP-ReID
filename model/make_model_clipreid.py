@@ -229,64 +229,157 @@ class Prompt_Cat3(nn.Module):
         prompts = torch.cat(pieces, dim=1)
         return prompts
 
+# class Prompt_Cat5(nn.Module):
+#     """
+#     Prompt learner for 5 attributes: top, underneath, shoes, hairstyle, carrying.
+#     Uses a fixed sentence with 5 X placeholders, and inserts attribute tokens at those positions.
+#     """
+#     def __init__(self, dataset_name, dtype, token_embedding):
+#         super().__init__()
+#         if dataset_name == "VehicleID" or dataset_name == "veri":
+#             ctx_init = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+#         else:
+#             ctx_init = "A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+
+#         ctx_dim = 512
+#         tokenized_prompts = clip.tokenize(ctx_init).cuda()
+#         with torch.no_grad():
+#             embedding = token_embedding(tokenized_prompts).type(dtype)
+#         self.tokenized_prompts = tokenized_prompts
+
+#         # Find positions of X tokens
+#         x_token_id = 343
+#         token_ids = tokenized_prompts[0].tolist()
+#         x_positions = [i for i, t in enumerate(token_ids) if t == x_token_id]
+#         if len(x_positions) != 5:
+#             raise RuntimeError(f"Expected 5 X tokens, found {len(x_positions)} at {x_positions}")
+
+#         # Register buffer segments
+#         self.register_buffer("token_prefix_0", embedding[:, :x_positions[0], :])        # before first X
+#         self.register_buffer("token_prefix_1", embedding[:, x_positions[0]+1:x_positions[1], :])  # between X1 and X2
+#         self.register_buffer("token_prefix_2", embedding[:, x_positions[1]+1:x_positions[2], :])  # between X2 and X3
+#         self.register_buffer("token_prefix_3", embedding[:, x_positions[2]+1:x_positions[3], :])  # between X3 and X4
+#         self.register_buffer("token_prefix_4", embedding[:, x_positions[3]+1:x_positions[4], :])  # between X4 and X5
+#         self.register_buffer("token_suffix", embedding[:, x_positions[4]+1:, :])                 # after last X
+#     def forward(self, label, prom_list):
+#         # prom_list: list of 5 tensors, each shape [B, 1, D] or [B, D]
+#         if prom_list is None or len(prom_list) != 5:
+#             raise ValueError("prom_list must be a list/tuple of length 5")
+
+#         b = label.shape[0]
+#         formatted = []
+#         for i, token in enumerate(prom_list):
+#             if token.dim() == 2:
+#                 token = token.unsqueeze(1)
+#             elif token.dim() != 3:
+#                 raise ValueError(f"prom_list[{i}] must be 2D or 3D, got {token.dim()}D")
+#             if token.size(2) != self.token_prefix_0.size(2):
+#                 raise ValueError(f"prom_list[{i}] last dim must be {self.token_prefix_0.size(2)}")
+#             formatted.append(token.to(device=self.token_prefix_0.device, dtype=self.token_prefix_0.dtype))
+
+#         # Build prompt sequence
+#         pieces = [self.token_prefix_0.expand(b, -1, -1)]
+#         for i, token in enumerate(formatted):
+#             pieces.append(token)
+#             if i < len(formatted) - 1:
+#                 pieces.append(getattr(self, f"token_prefix_{i+1}").expand(b, -1, -1))
+#         pieces.append(self.token_suffix.expand(b, -1, -1))
+
+#         prompts = torch.cat(pieces, dim=1)
+#         return prompts
+
+#------ debug---------
+# class Prompt_Cat5(nn.Module):
+#     """
+#     Prompt template with 5 X placeholders.
+#     Insert 5 attribute tokens directly into the X positions.
+#     """
+#     def __init__(self, dataset_name, dtype, token_embedding):
+#         super().__init__()
+#         if dataset_name == "VehicleID" or dataset_name == "veri":
+#             template = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+#         else:
+#             template = "A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+
+#         self.num_attributes = 5
+
+#         tokenized_prompts = clip.tokenize(template).cuda()
+#         with torch.no_grad():
+#             embedding = token_embedding(tokenized_prompts).type(dtype)
+
+#         self.tokenized_prompts = tokenized_prompts
+#         self.register_buffer("template_embedding", embedding)   # [1, 77, ctx_dim]
+
+#         x_token_id = clip.tokenize("X")[0, 1].item()
+#         x_positions = (tokenized_prompts[0] == x_token_id).nonzero(as_tuple=False).view(-1)
+
+#         if x_positions.shape[0] != self.num_attributes:
+#             raise RuntimeError(
+#                 f"Expected {self.num_attributes} X positions, got {x_positions.shape[0]}"
+#             )
+
+#         self.register_buffer("x_positions", x_positions)
+#         self.dtype = dtype
+
+#     def forward(self, prom_list):
+#         if prom_list is None or len(prom_list) != self.num_attributes:
+#             raise ValueError(f"prom_list must be a list/tuple of length {self.num_attributes}")
+
+#         first = prom_list[0]
+#         if first.dim() == 3:
+#             B = first.shape[0]
+#         elif first.dim() == 2:
+#             B = first.shape[0]
+#         else:
+#             raise ValueError(f"prom_list[0] must be 2D or 3D, got {first.dim()}D")
+
+#         prompts = self.template_embedding.expand(B, -1, -1).clone()
+
+#         for i, token in enumerate(prom_list):
+#             if token.dim() == 3:
+#                 if token.shape[1] != 1:
+#                     raise ValueError(f"prom_list[{i}] must have shape [B,1,D] if 3D, got {token.shape}")
+#                 token = token.squeeze(1)   # [B,1,D] -> [B,D]
+#             elif token.dim() != 2:
+#                 raise ValueError(f"prom_list[{i}] must be 2D or 3D, got {token.dim()}D")
+
+#             prompts[:, self.x_positions[i], :] = token.to(
+#                 device=prompts.device,
+#                 dtype=prompts.dtype
+#             )
+
+#         return prompts
+
 class Prompt_Cat5(nn.Module):
-    """
-    Prompt learner for 5 attributes: top, underneath, shoes, hairstyle, carrying.
-    Uses a fixed sentence with 5 X placeholders, and inserts attribute tokens at those positions.
-    """
     def __init__(self, dataset_name, dtype, token_embedding):
         super().__init__()
         if dataset_name == "VehicleID" or dataset_name == "veri":
-            ctx_init = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+            template = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
         else:
-            ctx_init = "A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+            template = "A photo of a person wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
 
-        ctx_dim = 512
-        ctx_init = ctx_init.replace("_", " ")
-        tokenized_prompts = clip.tokenize(ctx_init).cuda()
+        self.num_attributes = 5
+
+        tokenized_prompts = clip.tokenize(template).cuda()
         with torch.no_grad():
             embedding = token_embedding(tokenized_prompts).type(dtype)
+
         self.tokenized_prompts = tokenized_prompts
+        self.register_buffer("template_embedding", embedding)   # [1, 77, D]
 
-        # Find positions of X tokens
-        x_token_id = 343
-        token_ids = tokenized_prompts[0].tolist()
-        x_positions = [i for i, t in enumerate(token_ids) if t == x_token_id]
-        if len(x_positions) != 5:
-            raise RuntimeError(f"Expected 5 X tokens, found {len(x_positions)} at {x_positions}")
+        x_token_id = clip.tokenize("X")[0, 1].item()
+        x_positions = (tokenized_prompts[0] == x_token_id).nonzero(as_tuple=False).view(-1)
 
-        # Register buffer segments
-        self.register_buffer("token_prefix_0", embedding[:, :x_positions[0], :])        # before first X
-        self.register_buffer("token_prefix_1", embedding[:, x_positions[0]+1:x_positions[1], :])  # between X1 and X2
-        self.register_buffer("token_prefix_2", embedding[:, x_positions[1]+1:x_positions[2], :])  # between X2 and X3
-        self.register_buffer("token_prefix_3", embedding[:, x_positions[2]+1:x_positions[3], :])  # between X3 and X4
-        self.register_buffer("token_prefix_4", embedding[:, x_positions[3]+1:x_positions[4], :])  # between X4 and X5
-        self.register_buffer("token_suffix", embedding[:, x_positions[4]+1:, :])                 # after last X
-    def forward(self, label, prom_list):
-        # prom_list: list of 5 tensors, each shape [B, 1, D] or [B, D]
-        if prom_list is None or len(prom_list) != 5:
-            raise ValueError("prom_list must be a list/tuple of length 5")
+        self.register_buffer("x_positions", x_positions)
+        self.dtype = dtype
 
-        b = label.shape[0]
-        formatted = []
-        for i, token in enumerate(prom_list):
-            if token.dim() == 2:
-                token = token.unsqueeze(1)
-            elif token.dim() != 3:
-                raise ValueError(f"prom_list[{i}] must be 2D or 3D, got {token.dim()}D")
-            if token.size(2) != self.token_prefix_0.size(2):
-                raise ValueError(f"prom_list[{i}] last dim must be {self.token_prefix_0.size(2)}")
-            formatted.append(token.to(device=self.token_prefix_0.device, dtype=self.token_prefix_0.dtype))
+    def forward(self, prom_list):
+        B = prom_list[0].shape[0]
+        prompts = self.template_embedding.expand(B, -1, -1).clone()
 
-        # Build prompt sequence
-        pieces = [self.token_prefix_0.expand(b, -1, -1)]
-        for i, token in enumerate(formatted):
-            pieces.append(token)
-            if i < len(formatted) - 1:
-                pieces.append(getattr(self, f"token_prefix_{i+1}").expand(b, -1, -1))
-        pieces.append(self.token_suffix.expand(b, -1, -1))
+        for i in range(self.num_attributes):
+            prompts[:, self.x_positions[i], :] = prom_list[i].squeeze(1).type(self.dtype)
 
-        prompts = torch.cat(pieces, dim=1)
         return prompts
 
 class build_transformer(nn.Module):
