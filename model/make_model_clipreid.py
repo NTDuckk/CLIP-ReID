@@ -233,8 +233,8 @@ class build_transformer(nn.Module):
 
             prom_list = list(self.inversion_prompt_learner(image_feature))
             prompts = self.prompt_learner(label, prom_list)
-            print("Decoded prompt example stage1 22-3")
-            print(_tokenizer.decode(self.prompt_learner.tokenized_prompts[0].cpu().numpy()))
+            print("example stage1 22-3")
+            print(prompts[0])
             text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
 
             return image_feature, text_features
