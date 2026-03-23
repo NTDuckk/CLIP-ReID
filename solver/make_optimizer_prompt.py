@@ -6,7 +6,6 @@ def make_optimizer_1stage(cfg, model):
     for key, value in model.named_parameters():
         # Only optimize the 3 IM2TEXT branches inside inversion_prompt_learner
         if "inversion_prompt_learner" in key:
-            value.requires_grad_(True)
             lr = cfg.SOLVER.STAGE1.BASE_LR
             weight_decay = cfg.SOLVER.STAGE1.WEIGHT_DECAY
             params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
@@ -114,9 +113,9 @@ def make_optimizer_2stage(cfg, model, center_criterion):
         
         params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
         keys += [key]
-        print("Stage2 trainable params:")
-        for key in keys:
-            print("  ", key)
+    print("Stage2 trainable params:")
+    for key in keys:
+        print("  ", key)
     if cfg.SOLVER.STAGE2.OPTIMIZER_NAME == 'SGD':
         optimizer = getattr(torch.optim, cfg.SOLVER.STAGE2.OPTIMIZER_NAME)(params, momentum=cfg.SOLVER.STAGE2.MOMENTUM)
     elif cfg.SOLVER.STAGE2.OPTIMIZER_NAME == 'AdamW':

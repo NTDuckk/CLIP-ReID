@@ -7,8 +7,8 @@ from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
 from torch.cuda import amp
 import torch.distributed as dist
+from torch.nn import functional as F
 from loss.supcontrast import SupConLoss
-
 
 def do_train_stage2(cfg,
              model,
@@ -52,7 +52,8 @@ def do_train_stage2(cfg,
     all_start_time = time.monotonic()
 
     if precomputed_text_features is not None:
-        text_features = precomputed_text_features.to(device).float()
+        # text_features = precomputed_text_features.to(device).float()
+        text_features = precomputed_text_features.cuda()
         logger.info(
             "Using precomputed stage1 prototypes for stage2, shape: {}".format(tuple(text_features.shape))
         )

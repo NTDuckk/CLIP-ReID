@@ -147,6 +147,64 @@ class InversionPromptLearner5(nn.Module):
         carrying_token = self.prompt_carrying(image_feature).unsqueeze(1)
         return top_token, underneath_token, shoes_token, hairstyle_token, carrying_token
 
+
+class InversionPromptLearner(nn.Module):
+    """AP-Attack inspired textual inversion: 5 MLP networks map image features to pseudo-tokens."""
+    def __init__(self, dataset_name, dtype, token_embedding, clip_proj_dim=512):
+        super().__init__()
+        if dataset_name == "VehicleID" or dataset_name == "veri":
+            template = "A photo of a vehicle with X body , X color , X type , X top , carrying X ."
+        else:
+            template = "A photo of a person wearing X on top , X underneath , X hairstyle , X shoes , carrying X ."
+
+        self.num_attributes = 5
+
+        tokenized_prompts = clip.tokenize(template).cuda()
+        with torch.no_grad():
+            embedding = token_embedding(tokenized_prompts).type(dtype)
+
+        self.tokenized_prompts = tokenized_prompts  # [1, 77]
+
+        # Find positions of X placeholder tokens
+        x_token_id = clip.tokenize("X")[0, 1].item()
+        x_positions = (tokenized_prompts[0] == x_token_id).nonzero(as_tuple=False).view(-1)
+        assert x_positions.shape[0] == self.num_attributes, \
+            "Expected {} X positions in template, got {}".format(self.num_attributes, x_positions.shape[0])
+
+        self.register_buffer("template_embedding", embedding)  # [1, 77, ctx_dim]
+        self.register_buffer("x_positions", x_positions)       # [num_attributes]
+        self.dtype = dtype
+
+        ctx_dim = embedding.shape[-1]  # 512
+        hidden_dim = 1024
+
+        # 5 three-layer MLP inversion networks (shared across all IDs)
+        self.inversion_nets = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(clip_proj_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, ctx_dim),
+            ) for _ in range(self.num_attributes)
+        ])
+
+    def forward(self, image_features):
+        """
+        Args:
+            image_features: [B, clip_proj_dim] projected CLS features from frozen image encoder
+        Returns:
+            prompts: [B, 77, ctx_dim] prompt embeddings with pseudo-tokens inserted
+        """
+        B = image_features.shape[0]
+        prompts = self.template_embedding.expand(B, -1, -1).clone()
+
+        for i, net in enumerate(self.inversion_nets):
+            pseudo_token = net(image_features.float())  # [B, ctx_dim]
+            prompts[:, self.x_positions[i], :] = pseudo_token.type(self.dtype)
+
+        return prompts
+
 class Prompt_Cat3(nn.Module):
     """
     Prompt learner for 3 attributes: clothes, hairstyle, carrying.
@@ -419,7 +477,11 @@ class build_transformer(nn.Module):
             self.inversion_prompt_learner = InversionPromptLearner3(clip_model)
         elif self.att_flag == 5:
             self.prompt_learner = Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
-            self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
+            #  self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
+            self.inversion_prompt_learner = InversionPromptLearner(
+                dataset_name, clip_model.dtype, clip_model.token_embedding,
+                clip_proj_dim=self.in_planes_proj
+            )
         else:
             raise ValueError(f"att_flag must be 3 or 5, but got {self.att_flag}")
 
@@ -443,9 +505,14 @@ class build_transformer(nn.Module):
             return text_features
 
         if get_text_inversion == True:
-            prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
-            prompts = self.prompt_learner(prom_list)
-            text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
+            # Old flow (InversionPromptLearner3/5 + Prompt_Cat3/5):
+            # prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
+            # prompts = self.prompt_learner(prom_list)
+            # text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
+
+            # New flow (InversionPromptLearner returns full prompt embeddings directly):
+            prompts = self.inversion_prompt_learner(image_features_for_inversion)
+            text_features = self.text_encoder(prompts, self.inversion_prompt_learner.tokenized_prompts)
 
             return text_features
 
