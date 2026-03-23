@@ -198,7 +198,8 @@ class InversionPromptLearner(nn.Module):
         """
         B = image_features.shape[0]
         prompts = self.template_embedding.expand(B, -1, -1).clone()
-
+        print("success inversion Prompt Learner")
+        print("hidden_dim: {}, ctx_dim: {}, clip_proj_dim: {}".format(self.inversion_nets[0][0].in_features, self.inversion_nets[0][-1].out_features, image_features.shape[1]))
         for i, net in enumerate(self.inversion_nets):
             pseudo_token = net(image_features.float())  # [B, ctx_dim]
             prompts[:, self.x_positions[i], :] = pseudo_token.type(self.dtype)
@@ -477,11 +478,11 @@ class build_transformer(nn.Module):
             self.inversion_prompt_learner = InversionPromptLearner3(clip_model)
         elif self.att_flag == 5:
             self.prompt_learner = Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
-            #  self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
-            self.inversion_prompt_learner = InversionPromptLearner(
-                dataset_name, clip_model.dtype, clip_model.token_embedding,
-                clip_proj_dim=self.in_planes_proj
-            )
+            self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
+            # self.inversion_prompt_learner = InversionPromptLearner(
+            #     dataset_name, clip_model.dtype, clip_model.token_embedding,
+            #     clip_proj_dim=self.in_planes_proj
+            # )
         else:
             raise ValueError(f"att_flag must be 3 or 5, but got {self.att_flag}")
 
@@ -506,13 +507,13 @@ class build_transformer(nn.Module):
 
         if get_text_inversion == True:
             # Old flow (InversionPromptLearner3/5 + Prompt_Cat3/5):
-            # prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
-            # prompts = self.prompt_learner(prom_list)
-            # text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
+            prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
+            prompts = self.prompt_learner(prom_list)
+            text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
 
             # New flow (InversionPromptLearner returns full prompt embeddings directly):
-            prompts = self.inversion_prompt_learner(image_features_for_inversion)
-            text_features = self.text_encoder(prompts, self.inversion_prompt_learner.tokenized_prompts)
+            # prompts = self.inversion_prompt_learner(image_features_for_inversion)
+            # text_features = self.text_encoder(prompts, self.inversion_prompt_learner.tokenized_prompts)
 
             return text_features
 
