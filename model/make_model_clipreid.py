@@ -48,26 +48,19 @@ class TextEncoder(nn.Module):
         x = x[torch.arange(x.shape[0], device=x.device), tokenized_prompts.argmax(dim=-1).to(x.device)] @ self.text_projection
         return x
 
-
 class IM2TEXT(nn.Module):
-    def __init__(self, embed_dim=512, middle_dim=512, output_dim=512, n_layer=3, dropout=0.1):
+    def __init__(self, embed_dim=512, hidden_dim=1024, output_dim=512):
         super().__init__()
-        self.fc_out = nn.Linear(middle_dim, output_dim)
-        layers = []
-        dim = embed_dim
-        for _ in range(n_layer):
-            block = []
-            block.append(nn.Linear(dim, middle_dim))
-            block.append(nn.Dropout(dropout))
-            block.append(nn.ReLU())
-            dim = middle_dim
-            layers.append(nn.Sequential(*block))
-        self.layers = nn.Sequential(*layers)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
 
     def forward(self, x: torch.Tensor):
-        for layer in self.layers:
-            x = layer(x)
-        return self.fc_out(x)
+        return self.mlp(x)
 
 
 def make_model(cfg, num_class, camera_num, view_num):
@@ -97,24 +90,18 @@ class InversionPromptLearner3(nn.Module):
         super().__init__()
         self.prompt_clothes = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         self.prompt_hairstyle = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         self.prompt_carrying = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
 
     def forward(self, image_feature):
@@ -128,38 +115,28 @@ class InversionPromptLearner5(nn.Module):
         super().__init__()
         self.prompt_top = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         self.prompt_underneath = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         self.prompt_shoes = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         self.prompt_hairstyle = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         self.prompt_carrying = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
-            middle_dim=512,
-            output_dim=clip_model.transformer.width,
-            n_layer=3,
-            dropout=0.1
+            hidden_dim=1024,
+            output_dim=clip_model.transformer.width
         )
         
     def forward(self, image_feature):
