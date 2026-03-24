@@ -11,8 +11,8 @@ MODEL:
   # SIE_CAMERA: True
   # SIE_COE : 1.0
   ATT_FLAG: 5
-  n_querie: 16
-  block_ca: 5
+  n_querie: 3
+  block_ca: 6
   
 INPUT:
   SIZE_TRAIN: [256, 128]
