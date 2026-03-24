@@ -437,75 +437,141 @@ class Detailed_Prompt_Cat5(nn.Module):
         return prompts
 
 
+# class DetailCrossBlock(nn.Module):
+#     """
+#     Một detail block gần với ý paper:
+#     - q = current queries
+#     - k,v = concat(queries, patch_tokens)
+#     - cross attention
+#     - refinement bằng 1 Transformer block
+#     """
+#     def __init__(self, embed_dim):
+#         super().__init__()
+#         self.embed_dim = embed_dim
+#         self.num_heads = embed_dim // 64
+
+#         self.cross_attn = nn.MultiheadAttention(
+#             self.embed_dim,
+#             self.num_heads,
+#             batch_first=True
+#         )
+
+#         # dùng 1 layer cho mỗi block; stack 6 block ở ngoài sẽ gần paper hơn
+#         self.cross_modal_transformer = Transformer(
+#             width=self.embed_dim,
+#             layers=1,
+#             heads=self.num_heads
+#         )
+
+#         self.ln_pre_t = LayerNorm(self.embed_dim)
+#         self.ln_pre_i = LayerNorm(self.embed_dim)
+#         self.ln_post = LayerNorm(self.embed_dim)
+
+#         scale = self.cross_modal_transformer.width ** -0.5
+#         proj_std = scale * ((2 * self.cross_modal_transformer.layers) ** -0.5)
+#         attn_std = scale
+#         fc_std = (2 * self.cross_modal_transformer.width) ** -0.5
+
+#         for block in self.cross_modal_transformer.resblocks:
+#             nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
+#             nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
+#             nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
+#             nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
+
+#         nn.init.normal_(self.cross_attn.in_proj_weight, std=attn_std)
+#         nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
+
+#     def cross_former(self, q, k, v):
+#         x = self.cross_attn(
+#             self.ln_pre_t(q),
+#             self.ln_pre_i(k),
+#             self.ln_pre_i(v),
+#             need_weights=False
+#         )[0]  # [B, nq, D]
+
+#         # residual với queries cũ
+#         x = x + q
+
+#         # NLD -> LND
+#         x = x.permute(1, 0, 2)
+#         x = self.cross_modal_transformer(x)
+#         # LND -> NLD
+#         x = x.permute(1, 0, 2)
+
+#         x = self.ln_post(x)
+#         return x
+
+#     def forward(self, q, patch_tokens):
+#         kv = torch.cat([q, patch_tokens], dim=1)  # [B, nq+Np, D]
+#         q = self.cross_former(q, kv, kv)
+#         return q
+
 class DetailCrossBlock(nn.Module):
     """
-    Một detail block gần với ý paper:
-    - q = current queries
-    - k,v = concat(queries, patch_tokens)
-    - cross attention
-    - refinement bằng 1 Transformer block
+    Một block theo paper:
+    - Cross-attention: Q = queries, K = V = concat(queries, patch_tokens)
+    - Feed-forward network (2 lớp Linear + ReLU)
+    - Residual + LayerNorm
     """
     def __init__(self, embed_dim):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = embed_dim // 64
 
+        # Cross-attention
         self.cross_attn = nn.MultiheadAttention(
             self.embed_dim,
             self.num_heads,
             batch_first=True
         )
+        self.ln_pre_q = LayerNorm(self.embed_dim)
+        self.ln_pre_kv = LayerNorm(self.embed_dim)
+        self.ln_post_attn = LayerNorm(self.embed_dim)
 
-        # dùng 1 layer cho mỗi block; stack 6 block ở ngoài sẽ gần paper hơn
-        self.cross_modal_transformer = Transformer(
-            width=self.embed_dim,
-            layers=1,
-            heads=self.num_heads
+        # FFN: 2 lớp Linear với ReLU
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.ReLU(inplace=True),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(0.1)
         )
+        self.ln_post_ffn = LayerNorm(self.embed_dim)
 
-        self.ln_pre_t = LayerNorm(self.embed_dim)
-        self.ln_pre_i = LayerNorm(self.embed_dim)
-        self.ln_post = LayerNorm(self.embed_dim)
+        self._init_weights()
 
-        scale = self.cross_modal_transformer.width ** -0.5
-        proj_std = scale * ((2 * self.cross_modal_transformer.layers) ** -0.5)
+    def _init_weights(self):
+        scale = self.embed_dim ** -0.5
         attn_std = scale
-        fc_std = (2 * self.cross_modal_transformer.width) ** -0.5
-
-        for block in self.cross_modal_transformer.resblocks:
-            nn.init.normal_(block.attn.in_proj_weight, std=attn_std)
-            nn.init.normal_(block.attn.out_proj.weight, std=proj_std)
-            nn.init.normal_(block.mlp.c_fc.weight, std=fc_std)
-            nn.init.normal_(block.mlp.c_proj.weight, std=proj_std)
-
+        proj_std = scale
         nn.init.normal_(self.cross_attn.in_proj_weight, std=attn_std)
         nn.init.normal_(self.cross_attn.out_proj.weight, std=proj_std)
-
-    def cross_former(self, q, k, v):
-        x = self.cross_attn(
-            self.ln_pre_t(q),
-            self.ln_pre_i(k),
-            self.ln_pre_i(v),
-            need_weights=False
-        )[0]  # [B, nq, D]
-
-        # residual với queries cũ
-        x = x + q
-
-        # NLD -> LND
-        x = x.permute(1, 0, 2)
-        x = self.cross_modal_transformer(x)
-        # LND -> NLD
-        x = x.permute(1, 0, 2)
-
-        x = self.ln_post(x)
-        return x
+        for m in self.ffn.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=scale)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, q, patch_tokens):
-        kv = torch.cat([q, patch_tokens], dim=1)  # [B, nq+Np, D]
-        q = self.cross_former(q, kv, kv)
-        return q
+        """
+        q: [B, n_queries, D]
+        patch_tokens: [B, N_patch, D]
+        """
+        # Concatenate queries với patch tokens làm key/value
+        kv = torch.cat([q, patch_tokens], dim=1)  # [B, n_queries+N_patch, D]
 
+        # Cross-attention
+        q_norm = self.ln_pre_q(q)
+        kv_norm = self.ln_pre_kv(kv)
+        attn_out, _ = self.cross_attn(q_norm, kv_norm, kv_norm, need_weights=False)
+        q = q + attn_out                     # residual
+        q = self.ln_post_attn(q)
+
+        # FFN
+        ffn_out = self.ffn(q)
+        q = q + ffn_out                      # residual
+        q = self.ln_post_ffn(q)
+
+        return q
 
 class DetailTokenBranch(nn.Module):
     """
