@@ -46,24 +46,26 @@ def do_train_stage1(cfg,
     logger.info("model: {}".format(model))
 
     # Step 1: Pre-extract image features (frozen image encoder)
-    image_features = []
+    image_cls_features = []
+    image_token_features = []
     labels = []
     with torch.no_grad():
         for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage1):
             img = img.to(device)
             target = vid.to(device)
             with amp.autocast(enabled=True):
-                image_feature = model(img, target, get_image = True)
-                for i, img_feat in zip(target, image_feature):
-                    labels.append(i)
-                    image_features.append(img_feat.cpu())
-        labels_list = torch.stack(labels, dim=0).cuda() #N
-        image_features_list = torch.stack(image_features, dim=0).cuda()
-
+                cls_feats, token_feats  = model(img, target, get_image = True)
+                for pid, cls_f, tok_f in zip(target, cls_feats, token_feats):
+                    labels.append(pid)
+                    image_cls_features.append(cls_f.cpu())
+                    image_token_features.append(tok_f.cpu())
+        labels_list = torch.stack(labels, dim=0).cuda()
+        image_cls_features_list = torch.stack(image_cls_features, dim=0).cuda()        # [N, D]
+        image_token_features_list = torch.stack(image_token_features, dim=0).cuda()
         batch = cfg.SOLVER.STAGE1.IMS_PER_BATCH
         num_image = labels_list.shape[0]
         i_ter = num_image // batch
-    del labels, image_features
+    del labels, image_cls_features, image_token_features
 
     # Step 2: Train inversion networks with contrastive loss
     for epoch in range(1, epochs + 1):
@@ -80,17 +82,17 @@ def do_train_stage1(cfg,
                 b_list = iter_list[i*batch:num_image]
             
             target = labels_list[b_list]
-            image_feats = image_features_list[b_list]
+            image_cls_feats = image_cls_features_list[b_list]        # [B, D]
+            image_token_feats = image_token_features_list[b_list]    # [B, 1+Np, D]
 
             with amp.autocast(enabled=True):
-                # Generate text features from image features via inversion networks
                 text_features = model(
-                    image_features_for_inversion=image_feats,
+                    image_features_for_inversion=image_token_feats,
                     get_text_inversion=True
                 )
-            loss_i2t = xent(image_feats, text_features, target, target)
-            loss_t2i = xent(text_features, image_feats, target, target)
 
+            loss_i2t = xent(image_cls_feats, text_features, target, target)
+            loss_t2i = xent(text_features, image_cls_feats, target, target)
             loss = loss_i2t + loss_t2i
 
             scaler.scale(loss).backward()
@@ -123,10 +125,10 @@ def do_train_stage1(cfg,
     with torch.no_grad():
         for i in range(0, num_image, batch):
             end = min(i + batch, num_image)
-            image_feats = image_features_list[i:end]
+            image_token_feats = image_token_features_list[i:end]
             with amp.autocast(enabled=True):
                 text_feats = model(
-                    image_features_for_inversion=image_feats,
+                    image_features_for_inversion=image_token_feats,
                     get_text_inversion=True
                 )
             all_text_features.append(text_feats.float().cpu())
