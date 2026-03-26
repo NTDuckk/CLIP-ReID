@@ -104,6 +104,8 @@ def make_optimizer_2stage(cfg, model, center_criterion):
         if "prompt_learner" in key:
             value.requires_grad_(False)
             continue
+        if "text_classifier" in key or "text_bottleneck" in key:
+            continue
         if not value.requires_grad:
             continue
         lr = cfg.SOLVER.STAGE2.BASE_LR
