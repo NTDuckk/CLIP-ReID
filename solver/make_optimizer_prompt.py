@@ -10,7 +10,12 @@ def make_optimizer_1stage(cfg, model):
             weight_decay = cfg.SOLVER.STAGE1.WEIGHT_DECAY
             params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
             keys += [key]
-
+        if "text_classifier" in key or "text_bottleneck" in key:
+            value.requires_grad_(True)
+            lr = cfg.SOLVER.STAGE1.BASE_LR * 0.1
+            weight_decay = cfg.SOLVER.STAGE1.WEIGHT_DECAY
+            params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
+            keys += [key]
     print("Stage1 trainable params:")
     for key in keys:
         print("  ", key)
