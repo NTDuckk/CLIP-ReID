@@ -696,12 +696,19 @@ class build_transformer(nn.Module):
         self.classifier_proj = nn.Linear(self.in_planes_proj, self.num_classes, bias=False)
         self.classifier_proj.apply(weights_init_classifier)
 
+        self.text_classifier = nn.Linear(self.in_planes_proj, self.num_classes, bias=False)
+        self.text_classifier.apply(weights_init_classifier)
+
         self.bottleneck = nn.BatchNorm1d(self.in_planes)
         self.bottleneck.bias.requires_grad_(False)
         self.bottleneck.apply(weights_init_kaiming)
         self.bottleneck_proj = nn.BatchNorm1d(self.in_planes_proj)
         self.bottleneck_proj.bias.requires_grad_(False)
         self.bottleneck_proj.apply(weights_init_kaiming)
+
+        self.text_bottleneck = nn.BatchNorm1d(self.in_planes_proj)
+        self.text_bottleneck.bias.requires_grad_(False)
+        self.text_bottleneck.apply(weights_init_kaiming)
 
         self.h_resolution = int((cfg.INPUT.SIZE_TRAIN[0]-16)//cfg.MODEL.STRIDE_SIZE[0] + 1)
         self.w_resolution = int((cfg.INPUT.SIZE_TRAIN[1]-16)//cfg.MODEL.STRIDE_SIZE[1] + 1)
@@ -767,7 +774,9 @@ class build_transformer(nn.Module):
             prom_list = [top_token, underneath_token, hairstyle_token, shoes_token, carrying_token]
             prompts = self.prompt_learner(person_token, prom_list)
             text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
-            return text_features
+            text_feat = self.text_bottleneck(text_features)          # [B, 512]
+            text_score = self.text_classifier(text_feat)
+            return text_features, text_feat, text_score
 
         if get_image is True:
             if self.model_name == 'RN50':

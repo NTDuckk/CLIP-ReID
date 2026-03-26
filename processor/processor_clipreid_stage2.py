@@ -57,62 +57,62 @@ def do_train_stage2(cfg,
         logger.info(
             "Using precomputed stage1 prototypes for stage2, shape: {}".format(tuple(text_features.shape))
         )
-    else:
-        logger.info("No precomputed stage1 prototypes provided. Recomputing text prototypes at stage2 start.")
-        model.eval()
+    # else:
+    #     logger.info("No precomputed stage1 prototypes provided. Recomputing text prototypes at stage2 start.")
+    #     model.eval()
 
-        text_feature_sum = None
-        text_feature_count = torch.zeros(num_classes, device=device, dtype=torch.float32)
+    #     text_feature_sum = None
+    #     text_feature_count = torch.zeros(num_classes, device=device, dtype=torch.float32)
 
-        with torch.no_grad():
-            for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage2):
-                img = img.to(device)
-                target = vid.to(device)
+    #     with torch.no_grad():
+    #         for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage2):
+    #             img = img.to(device)
+    #             target = vid.to(device)
 
-                if cfg.MODEL.SIE_CAMERA:
-                    target_cam = target_cam.to(device)
-                else:
-                    target_cam = None
+    #             if cfg.MODEL.SIE_CAMERA:
+    #                 target_cam = target_cam.to(device)
+    #             else:
+    #                 target_cam = None
 
-                if cfg.MODEL.SIE_VIEW:
-                    target_view = target_view.to(device)
-                else:
-                    target_view = None
+    #             if cfg.MODEL.SIE_VIEW:
+    #                 target_view = target_view.to(device)
+    #             else:
+    #                 target_view = None
 
-                with amp.autocast(enabled=True):
-                    pid_list, _, mean_text_feature = model(
-                        x=img,
-                        label=target,
-                        get_text_inversion_stage2=True,
-                        cam_label=target_cam,
-                        view_label=target_view
-                    )
+    #             with amp.autocast(enabled=True):
+    #                 pid_list, _, mean_text_feature = model(
+    #                     x=img,
+    #                     label=target,
+    #                     get_text_inversion_stage2=True,
+    #                     cam_label=target_cam,
+    #                     view_label=target_view
+    #                 )
 
-                pid_list = pid_list.long()
-                mean_text_feature = mean_text_feature.float()
+    #             pid_list = pid_list.long()
+    #             mean_text_feature = mean_text_feature.float()
 
-                if text_feature_sum is None:
-                    feat_dim = mean_text_feature.size(1)
-                    text_feature_sum = torch.zeros(
-                        num_classes,
-                        feat_dim,
-                        device=device,
-                        dtype=mean_text_feature.dtype
-                    )
+    #             if text_feature_sum is None:
+    #                 feat_dim = mean_text_feature.size(1)
+    #                 text_feature_sum = torch.zeros(
+    #                     num_classes,
+    #                     feat_dim,
+    #                     device=device,
+    #                     dtype=mean_text_feature.dtype
+    #                 )
 
-                text_feature_sum.index_add_(0, pid_list, mean_text_feature)
-                text_feature_count.index_add_(
-                    0,
-                    pid_list,
-                    torch.ones(pid_list.size(0), device=device, dtype=text_feature_sum.dtype)
-                )
+    #             text_feature_sum.index_add_(0, pid_list, mean_text_feature)
+    #             text_feature_count.index_add_(
+    #                 0,
+    #                 pid_list,
+    #                 torch.ones(pid_list.size(0), device=device, dtype=text_feature_sum.dtype)
+    #             )
 
-        text_features = torch.zeros_like(text_feature_sum)
-        valid_mask = text_feature_count > 0
-        text_features[valid_mask] = (
-            text_feature_sum[valid_mask] /
-            text_feature_count[valid_mask].unsqueeze(1)
-        )
+    #     text_features = torch.zeros_like(text_feature_sum)
+    #     valid_mask = text_feature_count > 0
+    #     text_features[valid_mask] = (
+    #         text_feature_sum[valid_mask] /
+    #         text_feature_count[valid_mask].unsqueeze(1)
+    #     )
 
     for epoch in range(1, epochs + 1):
         start_time = time.time()
