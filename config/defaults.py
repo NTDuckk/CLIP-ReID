@@ -155,6 +155,7 @@ _C.SOLVER.STAGE1.LOG_PERIOD = 100
 # contain 16 images per batch
 # _C.SOLVER.STAGE1.IMS_PER_BATCH = 64
 _C.SOLVER.STAGE1.EVAL_PERIOD = 10
+_C.SOLVER.STAGE1.S1_ID_LOSS_FLAG = False
 
 # ---------------------------------------------------------------------------- #
 # Solver

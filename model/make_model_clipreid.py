@@ -690,6 +690,7 @@ class build_transformer(nn.Module):
         # ensure attribute exists even if SIE flags are disabled
         self.cv_embed = None
         self.att_flag = cfg.MODEL.ATT_FLAG
+        self.s1_id_flag = cfg.SOLVER.STAGE1.S1_ID_LOSS_FLAG
 
         self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
         self.classifier.apply(weights_init_classifier)
@@ -774,9 +775,12 @@ class build_transformer(nn.Module):
             prom_list = [top_token, underneath_token, hairstyle_token, shoes_token, carrying_token]
             prompts = self.prompt_learner(person_token, prom_list)
             text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
-            text_feat = self.text_bottleneck(text_features)          # [B, 512]
-            text_score = self.text_classifier(text_feat)
-            return text_features, text_feat, text_score
+            if self.s1_id_flag:
+                text_feat = self.text_bottleneck(text_features)          # [B, 512]
+                text_score = self.text_classifier(text_feat)
+                return text_features, text_feat, text_score
+            return text_features
+        
 
         if get_image is True:
             if self.model_name == 'RN50':

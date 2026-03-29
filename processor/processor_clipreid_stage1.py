@@ -86,20 +86,26 @@ def do_train_stage1(cfg,
             image_cls_feats = image_cls_features_list[b_list]        # [B, D]
             image_token_feats = image_token_features_list[b_list]    # [B, 1+Np, D]
 
-            with amp.autocast(enabled=True):
-                text_features, text_feat , text_score = model(
-                    x=img,
-                    label=target,
-                    image_features_for_inversion=image_token_feats,
-                    get_text_inversion=True
-                )
-
-            # loss_i2t = xent(image_cls_feats, text_features, target, target)
-            # loss_t2i = xent(text_features, image_cls_feats, target, target)
-            loss_i2t = xent(image_cls_feats, text_feat, target, target)
-            loss_t2i = xent(text_feat, image_cls_feats, target, target)
-            loss_id = xent_id(text_score, target)
-            loss = loss_i2t + loss_t2i + loss_id 
+            if core_model.s1_id_flag:
+                with amp.autocast(enabled=True):
+                    text_features, text_feat , text_score = model(
+                        image_features_for_inversion=image_token_feats,
+                        get_text_inversion=True
+                    )
+                loss_i2t = xent(image_cls_feats, text_feat, target, target)
+                loss_t2i = xent(text_feat, image_cls_feats, target, target)
+                loss_id = xent_id(text_score, target)
+                loss = loss_i2t + loss_t2i + loss_id 
+            else:
+                with amp.autocast(enabled=True):
+                    text_features = model(
+                        image_features_for_inversion=image_token_feats,
+                        get_text_inversion=True
+                    )
+                loss_i2t = xent(image_cls_feats, text_features, target, target)
+                loss_t2i = xent(text_features, image_cls_feats, target, target)
+                loss = loss_i2t + loss_t2i
+            
 
             scaler.scale(loss).backward()
 
@@ -132,15 +138,21 @@ def do_train_stage1(cfg,
         for i in range(0, num_image, batch):
             end = min(i + batch, num_image)
             image_token_feats = image_token_features_list[i:end]
-            with amp.autocast(enabled=True):
-                text_features_, text_feat_ , text_score_  = model(
-                    image_features_for_inversion=image_token_feats,
-                    get_text_inversion=True
-                )
-            # all_text_features.append(text_features_.float().cpu())
-            all_text_features.append(text_feat_.float().cpu())
-    all_text_features = torch.cat(all_text_features, dim=0)  # [N, proj_dim]
-
+            if core_model.s1_id_flag:
+                with amp.autocast(enabled=True):
+                    text_features_, text_feat_ , text_score_  = model(
+                        image_features_for_inversion=image_token_feats,
+                        get_text_inversion=True
+                    )
+                all_text_features.append(text_feat_.float().cpu())
+            else:
+                with amp.autocast(enabled=True):
+                    text_features_ = model(
+                        image_features_for_inversion=image_token_feats,
+                        get_text_inversion=True
+                    )
+                all_text_features.append(text_features_.float().cpu())
+    all_text_features = torch.cat(all_text_features, dim=0)  # [N, proj_dim]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
     avg_text_features = torch.zeros(num_classes, all_text_features.shape[-1])
     for c in range(num_classes):
         mask = (labels_list.cpu() == c)
