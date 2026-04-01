@@ -43,19 +43,29 @@ def evaluate(model, val_loader, num_query, device):
     return cmc, mAP
 
 def plot_cmc(cmc, save_path=None):
-    """Vẽ CMC curve"""
-    ranks = np.arange(1, len(cmc)+1)
-    plt.figure(figsize=(8,6))
-    plt.plot(ranks, cmc*100, marker='o', markersize=4, linewidth=2)
+    """Vẽ CMC curve với trục y zoom từ 85 đến 100, chia mỗi 0.1"""
+    ranks = np.arange(1, len(cmc) + 1)
+    cmc_percent = cmc * 100
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(ranks, cmc_percent, marker='o', markersize=4, linewidth=2)
+
     plt.xlabel('Rank', fontsize=14)
     plt.ylabel('Matching Rate (%)', fontsize=14)
     plt.title('CMC Curve', fontsize=16)
-    plt.grid(True, linestyle='--', alpha=0.6)
+
     plt.xlim(1, len(cmc))
-    plt.ylim(0, 100)
+    plt.ylim(85, 100)
+
+    # chia trục y mỗi 0.1
+    plt.yticks(np.arange(85, 100.1, 0.1))
+
+    plt.grid(True, linestyle='--', alpha=0.6)
+
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved CMC curve to {save_path}")
+
     plt.show()
 
 if __name__ == "__main__":
