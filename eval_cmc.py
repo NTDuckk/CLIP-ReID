@@ -58,7 +58,7 @@ def plot_cmc(cmc, save_path=None):
     plt.ylim(85, 100)
 
     # chia trục y mỗi 0.1
-    plt.yticks(np.arange(85, 100.1, 0.5))
+    plt.yticks(np.arange(80, 100.1, 0.5))
 
     plt.grid(True, linestyle='--', alpha=0.6)
 
