@@ -9,7 +9,6 @@ from model.make_model_clipreid import make_model
 from utils.logger import setup_logger
 
 def extract_features(model, dataloader, device):
-    """Trích xuất đặc trưng cho toàn bộ dataset"""
     model.eval()
     features = []
     pids = []
@@ -17,11 +16,14 @@ def extract_features(model, dataloader, device):
     with torch.no_grad():
         for imgs, pid, camid, camid_batch, viewid, img_path in dataloader:
             imgs = imgs.to(device)
-            feat = model(imgs)   # model trả về feature vector
+            feat = model(imgs)
             features.append(feat.cpu())
             pids.extend(pid)
             camids.extend(camid)
+
     features = torch.cat(features, dim=0)
+    pids = np.asarray(pids, dtype=np.int64)
+    camids = np.asarray(camids, dtype=np.int64)
     return features, pids, camids
 
 def evaluate(model, val_loader, num_query, device):
