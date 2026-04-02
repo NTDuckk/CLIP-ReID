@@ -13,7 +13,9 @@ import numpy as np
 import os
 import argparse
 from config import cfg
-
+import logging
+import torch.nn as nn
+from torch.cuda import amp
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -24,6 +26,87 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
 
+def build_text_features_from_stage1_checkpoint(
+    cfg,
+    model,
+    train_loader_stage1,
+    stage1_ckpt_path,
+    local_rank
+):
+    device = "cuda"
+    logger = logging.getLogger("transreid.train")
+    logger.info(f"Load stage1 checkpoint from: {stage1_ckpt_path}")
+
+    # load stage1 weights into bare model first
+    model.load_param(stage1_ckpt_path)
+
+    if device:
+        model.to(local_rank)
+        if torch.cuda.device_count() > 1:
+            print("Using {} GPUs for prototype extraction".format(torch.cuda.device_count()))
+            model = nn.DataParallel(model)
+
+    core_model = model.module if isinstance(model, nn.DataParallel) else model
+    model.eval()
+
+    # giống Step 1 của stage1: cache image token features
+    image_token_features = []
+    labels = []
+
+    with torch.no_grad():
+        for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader_stage1):
+            img = img.to(device)
+            target = vid.to(device)
+
+            with amp.autocast(enabled=True):
+                cls_feats, token_feats = model(img, target, get_image=True)
+
+            for pid, tok_f in zip(target, token_feats):
+                labels.append(pid)
+                image_token_features.append(tok_f.cpu())
+
+    labels_list = torch.stack(labels, dim=0).cuda()
+    image_token_features_list = torch.stack(image_token_features, dim=0).cuda()
+
+    batch = cfg.SOLVER.STAGE1.IMS_PER_BATCH
+    num_image = labels_list.shape[0]
+    num_classes = labels_list.max().item() + 1
+
+    logger.info("Recomputing averaged text features per ID from loaded stage1 checkpoint...")
+
+    all_text_features = []
+    with torch.no_grad():
+        for i in range(0, num_image, batch):
+            end = min(i + batch, num_image)
+            image_token_feats = image_token_features_list[i:end]
+
+            if core_model.s1_id_flag:
+                with amp.autocast(enabled=True):
+                    text_features_, text_feat_, text_score_ = model(
+                        image_features_for_inversion=image_token_feats,
+                        get_text_inversion=True
+                    )
+                all_text_features.append(text_feat_.float().cpu())
+            else:
+                with amp.autocast(enabled=True):
+                    text_features_ = model(
+                        image_features_for_inversion=image_token_feats,
+                        get_text_inversion=True
+                    )
+                all_text_features.append(text_features_.float().cpu())
+
+    all_text_features = torch.cat(all_text_features, dim=0)  # [N, D]
+
+    avg_text_features = torch.zeros(num_classes, all_text_features.shape[-1])
+    labels_cpu = labels_list.cpu()
+    for c in range(num_classes):
+        mask = (labels_cpu == c)
+        if mask.sum() > 0:
+            avg_text_features[c] = all_text_features[mask].mean(dim=0)
+
+    avg_text_features = avg_text_features.cuda()
+    logger.info("Loaded-stage1 prototypes ready, shape: {}".format(tuple(avg_text_features.shape)))
+    return avg_text_features
 
 if __name__ == '__main__':
 
@@ -34,6 +117,8 @@ if __name__ == '__main__':
 
     parser.add_argument("opts", help="Modify config options using the command-line", default=None,
                         nargs=argparse.REMAINDER)
+    parser.add_argument("--stage1_resume", default="", type=str,
+                    help="path to stage1 checkpoint, e.g. ViT-B-16_stage1_120.pth")
     parser.add_argument("--local_rank", default=0, type=int)
     args = parser.parse_args()
 
@@ -71,24 +156,33 @@ if __name__ == '__main__':
 
     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)
 
-    optimizer_1stage = make_optimizer_1stage(cfg, model)
-    scheduler_1stage = create_scheduler(
-        optimizer_1stage,
-        num_epochs=cfg.SOLVER.STAGE1.MAX_EPOCHS,
-        lr_min=cfg.SOLVER.STAGE1.LR_MIN,
-        warmup_lr_init=cfg.SOLVER.STAGE1.WARMUP_LR_INIT,
-        warmup_t=cfg.SOLVER.STAGE1.WARMUP_EPOCHS,
-        noise_range=None
-    )
+    if args.stage1_resume:
+        text_features = build_text_features_from_stage1_checkpoint(
+            cfg,
+            model,
+            train_loader_stage1,
+            args.stage1_resume,
+            args.local_rank
+        )
+    else:
+        optimizer_1stage = make_optimizer_1stage(cfg, model)
+        scheduler_1stage = create_scheduler(
+            optimizer_1stage,
+            num_epochs=cfg.SOLVER.STAGE1.MAX_EPOCHS,
+            lr_min=cfg.SOLVER.STAGE1.LR_MIN,
+            warmup_lr_init=cfg.SOLVER.STAGE1.WARMUP_LR_INIT,
+            warmup_t=cfg.SOLVER.STAGE1.WARMUP_EPOCHS,
+            noise_range=None
+        )
 
-    text_features = do_train_stage1(
-        cfg,
-        model,
-        train_loader_stage1,
-        optimizer_1stage,
-        scheduler_1stage,
-        args.local_rank
-    )
+        text_features = do_train_stage1(
+            cfg,
+            model,
+            train_loader_stage1,
+            optimizer_1stage,
+            scheduler_1stage,
+            args.local_rank
+        )
 
     optimizer_2stage, optimizer_center_2stage = make_optimizer_2stage(cfg, model, center_criterion)
     scheduler_2stage = WarmupMultiStepLR(
