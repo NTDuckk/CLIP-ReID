@@ -557,8 +557,8 @@ class DetailCrossBlock(nn.Module):
         patch_tokens: [B, N_patch, D]
         """
         # Concatenate queries với patch tokens làm key/value
-        kv = torch.cat([q, patch_tokens], dim=1)  # [B, n_queries+N_patch, D]
-
+        # kv = torch.cat([q, patch_tokens], dim=1)  # [B, n_queries+N_patch, D]
+        kv = patch_tokens
         # Cross-attention
         q_norm = self.ln_pre_q(q)
         kv_norm = self.ln_pre_kv(kv)
