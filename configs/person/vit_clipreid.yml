@@ -11,8 +11,8 @@ MODEL:
   # SIE_CAMERA: True
   # SIE_COE : 1.0
   ATT_FLAG: 5
-  n_querie: 3
-  block_ca: 6
+  n_querie: 2
+  block_ca: 4
   
 INPUT:
   SIZE_TRAIN: [256, 128]
@@ -57,7 +57,7 @@ SOLVER:
     MAX_EPOCHS: 90
     CHECKPOINT_PERIOD: 30
     LOG_PERIOD: 30
-    EVAL_PERIOD: 1
+    EVAL_PERIOD: 30
     BIAS_LR_FACTOR: 2
     
     STEPS: []

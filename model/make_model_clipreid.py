@@ -69,7 +69,6 @@ class IM2TEXT(nn.Module):
             x = layer(x)
         return self.fc_out(x)
 
-
 def make_model(cfg, num_class, camera_num, view_num):
     model = build_transformer(num_class, camera_num, view_num, cfg)
     return model
@@ -375,7 +374,6 @@ class Prompt_Cat5(nn.Module):
             prompts[:, self.x_positions[i], :] = prom_list[i].squeeze(1).type(self.dtype)
 
         return prompts
-
 
 class Detailed_Prompt_Cat5(nn.Module):
     """
@@ -781,7 +779,6 @@ class build_transformer(nn.Module):
                 return text_features, text_feat, text_score
             return text_features
         
-
         if get_image is True:
             if self.model_name == 'RN50':
                 image_features_last, image_features, image_features_proj = self.image_encoder(x)
