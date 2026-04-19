@@ -20,7 +20,9 @@ def do_train_stage2(cfg,
              scheduler,
              loss_fn,
              num_query, local_rank,
-             precomputed_text_features=None):
+             precomputed_text_features=None,
+             start_epoch=1,
+             resume_states=None):
     log_period = cfg.SOLVER.STAGE2.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.STAGE2.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.STAGE2.EVAL_PERIOD
@@ -46,6 +48,9 @@ def do_train_stage2(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
+    if resume_states is not None and resume_states.get("scaler_state_dict") is not None:
+        scaler.load_state_dict(resume_states["scaler_state_dict"])
+        logger.info("Loaded AMP scaler state from stage2 checkpoint")
     xent = SupConLoss(device)
 
     from datetime import timedelta
@@ -57,6 +62,8 @@ def do_train_stage2(cfg,
         logger.info(
             "Using precomputed stage1 prototypes for stage2, shape: {}".format(tuple(text_features.shape))
         )
+    else:
+        raise ValueError("precomputed_text_features is required for stage2 training/resume.")
     # else:
     #     logger.info("No precomputed stage1 prototypes provided. Recomputing text prototypes at stage2 start.")
     #     model.eval()
@@ -114,7 +121,7 @@ def do_train_stage2(cfg,
     #         text_feature_count[valid_mask].unsqueeze(1)
     #     )
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -186,15 +193,26 @@ def do_train_stage2(cfg,
             )
 
         if epoch % checkpoint_period == 0:
+            model_state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model_state,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'optimizer_center_state_dict': optimizer_center.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
+                'text_features': text_features.detach().cpu(),
+                'cfg_dump': cfg.dump(),
+            }
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     torch.save(
-                        model.state_dict(),
+                        checkpoint,
                         os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch))
                     )
             else:
                 torch.save(
-                    model.state_dict(),
+                    checkpoint,
                     os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch))
                 )
 

@@ -17,6 +17,16 @@ import logging
 import torch.nn as nn
 from torch.cuda import amp
 
+
+def strip_module_prefix(state_dict):
+    cleaned = {}
+    for k, v in state_dict.items():
+        if k.startswith("module."):
+            cleaned[k[len("module."):]] = v
+        else:
+            cleaned[k] = v
+    return cleaned
+
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -119,6 +129,8 @@ if __name__ == '__main__':
                         nargs=argparse.REMAINDER)
     parser.add_argument("--stage1_resume", default="", type=str,
                     help="path to stage1 checkpoint, e.g. ViT-B-16_stage1_120.pth")
+    parser.add_argument("--stage2_resume", default="", type=str,
+                    help="path to stage2 checkpoint with full training states")
     parser.add_argument("--local_rank", default=0, type=int)
     args = parser.parse_args()
 
@@ -156,7 +168,24 @@ if __name__ == '__main__':
 
     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)
 
-    if args.stage1_resume:
+    stage2_checkpoint = None
+    start_epoch_stage2 = 1
+    resume_states = None
+
+    if args.stage2_resume:
+        logger.info("Resuming stage2 from checkpoint: {}".format(args.stage2_resume))
+        stage2_checkpoint = torch.load(args.stage2_resume, map_location="cpu")
+        model_state_dict = stage2_checkpoint.get("model_state_dict", stage2_checkpoint)
+        model.load_state_dict(strip_module_prefix(model_state_dict))
+
+        if "text_features" in stage2_checkpoint and stage2_checkpoint["text_features"] is not None:
+            text_features = stage2_checkpoint["text_features"].float().cuda()
+        else:
+            raise ValueError(
+                "stage2 checkpoint does not contain text_features. "
+                "Please create a new stage2 checkpoint with the updated training code."
+            )
+    elif args.stage1_resume:
         text_features = build_text_features_from_stage1_checkpoint(
             cfg,
             model,
@@ -194,6 +223,20 @@ if __name__ == '__main__':
         cfg.SOLVER.STAGE2.WARMUP_METHOD
     )
 
+    if stage2_checkpoint is not None:
+        if "optimizer_state_dict" in stage2_checkpoint:
+            optimizer_2stage.load_state_dict(stage2_checkpoint["optimizer_state_dict"])
+        if "optimizer_center_state_dict" in stage2_checkpoint:
+            optimizer_center_2stage.load_state_dict(stage2_checkpoint["optimizer_center_state_dict"])
+        if "scheduler_state_dict" in stage2_checkpoint:
+            scheduler_2stage.load_state_dict(stage2_checkpoint["scheduler_state_dict"])
+
+        start_epoch_stage2 = int(stage2_checkpoint.get("epoch", 0)) + 1
+        resume_states = {
+            "scaler_state_dict": stage2_checkpoint.get("scaler_state_dict", None)
+        }
+        logger.info("Stage2 resume start epoch: {}".format(start_epoch_stage2))
+
     do_train_stage2(
         cfg,
         model,
@@ -206,5 +249,7 @@ if __name__ == '__main__':
         loss_func,
         num_query,
         args.local_rank,
-        precomputed_text_features=text_features
+        precomputed_text_features=text_features,
+        start_epoch=start_epoch_stage2,
+        resume_states=resume_states
     )

@@ -119,6 +119,13 @@ class InversionPromptLearner3(nn.Module):
 class InversionPromptLearner5(nn.Module):
     def __init__(self, clip_model):
         super().__init__()
+        self.prompt_person = IM2TEXT(
+            embed_dim=clip_model.visual.output_dim,
+            middle_dim=512,
+            output_dim=clip_model.transformer.width,
+            n_layer=3,
+            dropout=0.1
+        )
         self.prompt_top = IM2TEXT(
             embed_dim=clip_model.visual.output_dim,
             middle_dim=512,
@@ -156,12 +163,13 @@ class InversionPromptLearner5(nn.Module):
         )
         
     def forward(self, image_feature):
+        person_token = self.prompt_person(image_feature).unsqueeze(1)
         top_token = self.prompt_top(image_feature).unsqueeze(1)
         underneath_token = self.prompt_underneath(image_feature).unsqueeze(1)
         shoes_token = self.prompt_shoes(image_feature).unsqueeze(1)
         hairstyle_token = self.prompt_hairstyle(image_feature).unsqueeze(1)
         carrying_token = self.prompt_carrying(image_feature).unsqueeze(1)
-        return top_token, underneath_token, shoes_token, hairstyle_token, carrying_token
+        return person_token, top_token, underneath_token, hairstyle_token, shoes_token, carrying_token
 
 class Prompt_Cat3(nn.Module):
     """
@@ -347,9 +355,9 @@ class Prompt_Cat5(nn.Module):
     def __init__(self, dataset_name, dtype, token_embedding):
         super().__init__()
         if dataset_name == "VehicleID" or dataset_name == "veri":
-            template = "A photo of a vehicle wearing X on top, X underneath, X shoes, having X hairstyle and carrying X."
+            template = "A photo of a S vehicle wearing X on top , X underneath , X hairstyle , X shoes , carrying X ."
         else:
-            template = "A photo of a person wearing X on top , X underneath , X hairstyle , X shoes , carrying X ."
+            template = "A photo of a S person wearing X on top , X underneath , X hairstyle , X shoes , carrying X ."
                             
         self.num_attributes = 5
 
@@ -360,18 +368,33 @@ class Prompt_Cat5(nn.Module):
         self.tokenized_prompts = tokenized_prompts
         self.register_buffer("template_embedding", embedding)   # [1, 77, D]
 
+        s_token_id = clip.tokenize("S")[0, 1].item()
         x_token_id = clip.tokenize("X")[0, 1].item()
+
+        s_positions = (tokenized_prompts[0] == s_token_id).nonzero(as_tuple=False).view(-1)
         x_positions = (tokenized_prompts[0] == x_token_id).nonzero(as_tuple=False).view(-1)
 
+        assert s_positions.numel() == 1, f"Expected 1 S position, got {s_positions.numel()} at {s_positions.tolist()}"
+        assert x_positions.numel() == 5, f"Expected 5 X positions, got {x_positions.numel()} at {x_positions.tolist()}"
+
+        self.register_buffer("s_position", s_positions)   # [1]
         self.register_buffer("x_positions", x_positions)
         self.dtype = dtype
 
-    def forward(self, prom_list):
-        B = prom_list[0].shape[0]
+    def forward(self, person_token, prom_list):
+        if person_token.dim() == 2:
+            person_token = person_token.unsqueeze(1)
+
+        B = person_token.shape[0]
         prompts = self.template_embedding.expand(B, -1, -1).clone()
 
+        prompts[:, self.s_position.item(), :] = person_token.squeeze(1).type(self.dtype)
+
         for i in range(self.num_attributes):
-            prompts[:, self.x_positions[i], :] = prom_list[i].squeeze(1).type(self.dtype)
+            token_i = prom_list[i]
+            if token_i.dim() == 2:
+                token_i = token_i.unsqueeze(1)
+            prompts[:, self.x_positions[i], :] = token_i.squeeze(1).type(self.dtype)
 
         return prompts
 
@@ -688,6 +711,7 @@ class build_transformer(nn.Module):
         # ensure attribute exists even if SIE flags are disabled
         self.cv_embed = None
         self.att_flag = cfg.MODEL.ATT_FLAG
+        self.feat_flag = cfg.MODEL.FEAT_FLAG.lower()
         self.s1_id_flag = cfg.SOLVER.STAGE1.S1_ID_LOSS_FLAG
 
         self.classifier = nn.Linear(self.in_planes, self.num_classes, bias=False)
@@ -735,10 +759,14 @@ class build_transformer(nn.Module):
             self.prompt_learner = Prompt_Cat3(dataset_name, clip_model.dtype, clip_model.token_embedding)
             self.inversion_prompt_learner = InversionPromptLearner3(clip_model)
         elif self.att_flag == 5:
-            # self.prompt_learner = Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
-            # self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
-            self.prompt_learner = Detailed_Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
-            self.inversion_prompt_learner = Detailed_InversionPromptLearner5(cfg, clip_model)
+            if self.feat_flag == 'cls':
+                self.prompt_learner = Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
+                self.inversion_prompt_learner = InversionPromptLearner5(clip_model)
+            elif self.feat_flag == 'patch':
+                self.prompt_learner = Detailed_Prompt_Cat5(dataset_name, clip_model.dtype, clip_model.token_embedding)
+                self.inversion_prompt_learner = Detailed_InversionPromptLearner5(cfg, clip_model)
+            else:
+                raise ValueError(f"FEAT_FLAG must be 'cls' or 'patch', but got {self.feat_flag}")
         else:
             raise ValueError(f"att_flag must be 3 or 5, but got {self.att_flag}")
 
@@ -762,16 +790,32 @@ class build_transformer(nn.Module):
             return text_features
 
         if get_text_inversion == True:
-            # Old flow (InversionPromptLearner3/5 + Prompt_Cat3/5):
-            # prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
-            # prompts = self.prompt_learner(prom_list)
-            # text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
-            # return text_features
-            person_token, top_token, underneath_token, hairstyle_token, shoes_token, carrying_token = \
-                self.inversion_prompt_learner(image_features_for_inversion)
-                
-            prom_list = [top_token, underneath_token, hairstyle_token, shoes_token, carrying_token]
-            prompts = self.prompt_learner(person_token, prom_list)
+            if self.feat_flag == 'cls':
+                cls_feature = image_features_for_inversion
+                cls_feature = cls_feature[:, 0, :]
+                if self.att_flag == 3:
+                    prom_list = list(self.inversion_prompt_learner(cls_feature))
+                    prompts = self.prompt_learner(label, prom_list)
+                elif self.att_flag == 5:
+                    person_token, top_token, underneath_token, hairstyle_token, shoes_token, carrying_token = \
+                        self.inversion_prompt_learner(cls_feature)
+                    prom_list = [top_token, underneath_token, hairstyle_token, shoes_token, carrying_token]
+                    prompts = self.prompt_learner(person_token, prom_list)
+                else:
+                    raise ValueError(f"att_flag must be 3 or 5, but got {self.att_flag}")
+            else:
+                if self.att_flag == 3:
+                    prom_list = list(self.inversion_prompt_learner(image_features_for_inversion))
+                    prompts = self.prompt_learner(label, prom_list)
+                elif self.att_flag == 5:
+                    person_token, top_token, underneath_token, hairstyle_token, shoes_token, carrying_token = \
+                        self.inversion_prompt_learner(image_features_for_inversion)
+
+                    prom_list = [top_token, underneath_token, hairstyle_token, shoes_token, carrying_token]
+                    prompts = self.prompt_learner(person_token, prom_list)
+                else:
+                    raise ValueError(f"att_flag must be 3 or 5, but got {self.att_flag}")
+
             text_features = self.text_encoder(prompts, self.prompt_learner.tokenized_prompts)
             if self.s1_id_flag:
                 text_feat = self.text_bottleneck(text_features)          # [B, 512]
@@ -834,7 +878,9 @@ class build_transformer(nn.Module):
                 return torch.cat([img_feature, img_feature_proj], dim=1)
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
+        param_dict = torch.load(trained_path, map_location='cpu')
+        if isinstance(param_dict, dict) and 'model_state_dict' in param_dict:
+            param_dict = param_dict['model_state_dict']
         for i in param_dict:
             self.state_dict()[i.replace('module.', '')].copy_(param_dict[i])
         print('Loading pretrained model from {}'.format(trained_path))

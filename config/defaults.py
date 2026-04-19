@@ -64,6 +64,7 @@ _C.MODEL.SIE_VIEW = False
 
 
 _C.MODEL.ATT_FLAG = 5
+_C.MODEL.FEAT_FLAG = 'patch'
 _C.MODEL.n_querie = 16
 _C.MODEL.block_ca = 5
 # -----------------------------------------------------------------------------
