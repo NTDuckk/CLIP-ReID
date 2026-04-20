@@ -10,10 +10,10 @@ MODEL:
   I2T_LOSS_WEIGHT : 1.0
   # SIE_CAMERA: True
   # SIE_COE : 1.0
-  ATT_FLAG: 3
-  FEAT_FLAG: 'cls'
-  n_querie: 3
-  block_ca: 6
+  ATT_FLAG: 5
+  FEAT_FLAG: 'patch'
+  n_querie: 2
+  block_ca: 4
   
 INPUT:
   SIZE_TRAIN: [256, 128]
@@ -73,9 +73,9 @@ TEST:
   FEAT_NORM: 'yes'
 
 DATASETS:
-  NAMES: ('market1501')
-  ROOT_DIR: ('datasets/dataset')
-OUTPUT_DIR: 'vit_clipreid_market1501/logs'
+#   NAMES: ('market1501')
+#   ROOT_DIR: ('datasets/dataset')
+# OUTPUT_DIR: 'vit_clipreid_market1501/logs'
 
 #   NAMES: ('dukemtmc')
 #   ROOT_DIR: ('')
@@ -85,7 +85,7 @@ OUTPUT_DIR: 'vit_clipreid_market1501/logs'
 #   ROOT_DIR: ('')
 # OUTPUT_DIR: ''
 
-#   NAMES: ('msmt17')
-#   ROOT_DIR: ('datasets/dataset')
-# OUTPUT_DIR: 'vit_clipreid_msmt17/logs'
+  NAMES: ('msmt17')
+  ROOT_DIR: ('datasets/dataset')
+OUTPUT_DIR: 'vit_clipreid_msmt17/logs'
 # CUDA_VISIBLE_DEVICES=3 python train_clipreid.py --config_file configs/person/vit_clipreid.yml
