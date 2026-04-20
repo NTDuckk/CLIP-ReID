@@ -203,7 +203,6 @@ class Prompt_Cat3(nn.Module):
         tokenized_prompts = clip.tokenize(template).cuda()
         with torch.no_grad():
             embedding = token_embedding(tokenized_prompts).type(dtype)
-
         self.tokenized_prompts = tokenized_prompts
         self.register_buffer("template_embedding", embedding)   # [1, 77, D]
 
@@ -242,9 +241,6 @@ class Prompt_Cat3(nn.Module):
                 token_i = token_i.unsqueeze(1)
             elif token_i.dim() != 3:
                 raise ValueError(f"prom_list[{i}] must be 2D or 3D, got {token_i.dim()}D")
-
-            if token_i.shape[0] != B:
-                raise ValueError(f"prom_list[{i}] batch size mismatch: expected {B}, got {token_i.shape[0]}")
 
             prompts[:, self.x_positions[i], :] = token_i.squeeze(1).to(
                 device=prompts.device,
@@ -780,6 +776,7 @@ class build_transformer(nn.Module):
         dataset_name = cfg.DATASETS.NAMES
         if self.att_flag == 3:
             if self.feat_flag == 'cls':
+            
                 self.prompt_learner = Prompt_Cat3(dataset_name, clip_model.dtype, clip_model.token_embedding)
                 self.inversion_prompt_learner = InversionPromptLearner3(clip_model)
         elif self.att_flag == 5:
