@@ -193,9 +193,9 @@ class Prompt_Cat3(nn.Module):
     def __init__(self, dataset_name, dtype, token_embedding):
         super().__init__()
         if dataset_name == "VehicleID" or dataset_name == "veri":
-            template = "A photo of a S vehicle wearing X on top , X hairstyle , carrying X ."
+            template = "A photo of a S vehicle wearing X clothes , X hairstyle , carrying X ."
         else:
-            template = "A photo of a S person wearing X on top , X hairstyle , carrying X ."
+            template = "A photo of a S person wearing X clothes , X hairstyle , carrying X ."
 
         self.num_attributes = 3
         self.dtype = dtype
