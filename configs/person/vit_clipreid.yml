@@ -11,7 +11,7 @@ MODEL:
   # SIE_CAMERA: True
   # SIE_COE : 1.0
   ATT_FLAG: 3
-  FEAT_FLAG: 'patch'
+  FEAT_FLAG: 'cls'
   n_querie: 3
   block_ca: 6
   
