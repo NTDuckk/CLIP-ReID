@@ -12,8 +12,8 @@ MODEL:
   # SIE_COE : 1.0
   ATT_FLAG: 3
   FEAT_FLAG: 'patch'
-  n_querie: 3
-  block_ca: 6
+  n_querie: 2
+  block_ca: 4
   
 INPUT:
   SIZE_TRAIN: [256, 128]
