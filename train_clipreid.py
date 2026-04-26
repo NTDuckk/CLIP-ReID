@@ -181,10 +181,24 @@ if __name__ == '__main__':
         if "text_features" in stage2_checkpoint and stage2_checkpoint["text_features"] is not None:
             text_features = stage2_checkpoint["text_features"].float().cuda()
         else:
-            raise ValueError(
-                "stage2 checkpoint does not contain text_features. "
-                "Please create a new stage2 checkpoint with the updated training code."
-            )
+            if args.stage1_resume:
+                logger.warning(
+                    "stage2 checkpoint does not contain text_features. "
+                    "Falling back to rebuilding text features from stage1 checkpoint: {}".format(args.stage1_resume)
+                )
+                text_features = build_text_features_from_stage1_checkpoint(
+                    cfg,
+                    model,
+                    train_loader_stage1,
+                    args.stage1_resume,
+                    args.local_rank
+                )
+            else:
+                raise ValueError(
+                    "stage2 checkpoint does not contain text_features. "
+                    "Please pass --stage1_resume to rebuild text_features, "
+                    "or use a newer stage2 checkpoint that already stores text_features."
+                )
     elif args.stage1_resume:
         text_features = build_text_features_from_stage1_checkpoint(
             cfg,
