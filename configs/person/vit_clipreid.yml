@@ -11,7 +11,7 @@ MODEL:
   # SIE_CAMERA: True
   # SIE_COE : 1.0
   ATT_FLAG: 3
-  FEAT_FLAG: 'cls'
+  FEAT_FLAG: 'patch'
   n_querie: 2
   block_ca: 4
 
@@ -73,13 +73,13 @@ TEST:
   FEAT_NORM: 'yes'
 
 DATASETS:
-#   NAMES: ('market1501')
-#   ROOT_DIR: ('datasets/dataset')
-# OUTPUT_DIR: 'vit_clipreid_market1501/logs'
-
-  NAMES: ('dukemtmc')
+  NAMES: ('market1501')
   ROOT_DIR: ('datasets/dataset')
-OUTPUT_DIR: 'vit_clipreid_dukemtmc/logs'
+OUTPUT_DIR: 'vit_clipreid_market1501/logs'
+
+#   NAMES: ('dukemtmc')
+#   ROOT_DIR: ('datasets/dataset')
+# OUTPUT_DIR: 'vit_clipreid_dukemtmc/logs'
 
 #   NAMES: ('occ_duke')
 #   ROOT_DIR: ('')
