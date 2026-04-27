@@ -27,6 +27,12 @@ def strip_module_prefix(state_dict):
             cleaned[k] = v
     return cleaned
 
+def optimizer_to(optim, device):
+    for state in optim.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device)
+
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -244,6 +250,16 @@ if __name__ == '__main__':
             optimizer_center_2stage.load_state_dict(stage2_checkpoint["optimizer_center_state_dict"])
         if "scheduler_state_dict" in stage2_checkpoint:
             scheduler_2stage.load_state_dict(stage2_checkpoint["scheduler_state_dict"])
+
+        device = torch.device("cuda", args.local_rank)
+        optimizer_to(optimizer_2stage, device)
+        optimizer_to(optimizer_center_2stage, device)
+
+        start_epoch_stage2 = int(stage2_checkpoint.get("epoch", 0)) + 1
+        resume_states = {
+            "scaler_state_dict": stage2_checkpoint.get("scaler_state_dict", None)
+        }
+        logger.info("Stage2 resume start epoch: {}".format(start_epoch_stage2))
 
         start_epoch_stage2 = int(stage2_checkpoint.get("epoch", 0)) + 1
         resume_states = {
