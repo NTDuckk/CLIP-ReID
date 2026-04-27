@@ -77,15 +77,15 @@ DATASETS:
 #   ROOT_DIR: ('datasets/dataset')
 # OUTPUT_DIR: 'vit_clipreid_market1501/logs'
 
-#   NAMES: ('dukemtmc')
-#   ROOT_DIR: ('datasets/dataset')
-# OUTPUT_DIR: 'vit_clipreid_dukemtmc/logs'
+  NAMES: ('dukemtmc')
+  ROOT_DIR: ('datasets/dataset')
+OUTPUT_DIR: 'vit_clipreid_dukemtmc/logs'
 
 #   NAMES: ('occ_duke')
 #   ROOT_DIR: ('')
 # OUTPUT_DIR: ''
 
-  NAMES: ('msmt17')
-  ROOT_DIR: ('datasets/dataset')
-OUTPUT_DIR: 'vit_clipreid_msmt17/logs'
+#   NAMES: ('msmt17')
+#   ROOT_DIR: ('datasets/dataset')
+# OUTPUT_DIR: 'vit_clipreid_msmt17/logs'
 # CUDA_VISIBLE_DEVICES=3 python train_clipreid.py --config_file configs/person/vit_clipreid.yml
