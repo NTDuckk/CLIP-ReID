@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import torch
 import cv2
@@ -6,6 +7,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from torchvision import transforms
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from config import cfg
 from model.make_model_clipreid import make_model
