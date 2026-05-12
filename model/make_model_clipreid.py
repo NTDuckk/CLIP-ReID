@@ -475,7 +475,7 @@ class DetailCrossBlock(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, q, patch_tokens):
+    def forward(self, q, patch_tokens, return_attn=True):
         """
         q: [B, n_queries, D]
         patch_tokens: [B, N_patch, D]
@@ -486,14 +486,32 @@ class DetailCrossBlock(nn.Module):
         # Cross-attention
         q_norm = self.ln_pre_q(q)
         kv_norm = self.ln_pre_kv(kv)
-        attn_out, _ = self.cross_attn(q_norm, kv_norm, kv_norm, need_weights=False)
-        q = q + attn_out                     # residual
+
+        if return_attn:
+            attn_out, attn_weights = self.cross_attn(
+                q_norm,
+                kv_norm,
+                kv_norm,
+                need_weights=True,
+                average_attn_weights=False
+            )
+        else:
+            attn_out, attn_weights = self.cross_attn(
+                q_norm,
+                kv_norm,
+                kv_norm,
+                need_weights=False
+            )
+
+        q = q + attn_out
         q = self.ln_post_attn(q)
 
-        # FFN
         ffn_out = self.ffn(q)
-        q = q + ffn_out                      # residual
+        q = q + ffn_out
         q = self.ln_post_ffn(q)
+
+        if return_attn:
+            return q, attn_weights
 
         return q
 
@@ -525,19 +543,29 @@ class DetailTokenBranch(nn.Module):
             dropout=0.1
         )
 
-    def forward(self, patch_tokens):
+    def forward(self, patch_tokens, return_attn=True):
         """
         patch_tokens: [B, Np, D]
         return: [B,1,Dt]
         """
         B = patch_tokens.shape[0]
-        q = self.queries.expand(B, -1, -1)   # [B, n_querie, D]
+        q = self.queries.expand(B, -1, -1)
+
+        attn_list = []
 
         for blk in self.blocks:
-            q = blk(q, patch_tokens)
+            if return_attn:
+                q, attn = blk(q, patch_tokens, return_attn=True)
+                attn_list.append(attn)
+            else:
+                q = blk(q, patch_tokens)
 
-        pooled = q.mean(dim=1)               # [B, D]
-        token = self.mapper(pooled).unsqueeze(1)   # [B,1,Dt]
+        pooled = q.mean(dim=1)
+        token = self.mapper(pooled).unsqueeze(1)
+
+        if return_attn:
+            return token, attn_list
+
         return token
     
 class Detailed_InversionPromptLearner5(nn.Module):
@@ -570,14 +598,38 @@ class Detailed_InversionPromptLearner5(nn.Module):
         self.prompt_shoes = DetailTokenBranch(clip_model, self.n_querie, self.block_ca)
         self.prompt_carrying = DetailTokenBranch(clip_model, self.n_querie, self.block_ca)
 
-    def forward(self, image_features_for_inversion):
+    def forward(self, image_features_for_inversion, return_attn=False):
         """
         image_features_for_inversion: [B, 1+N, D]
         """
-        cls_token = image_features_for_inversion[:, 0]      # [B, D]
-        patch_tokens = image_features_for_inversion[:, 1:]  # [B, N, D]
+        cls_token = image_features_for_inversion[:, 0]
+        patch_tokens = image_features_for_inversion[:, 1:]
 
         person_token = self.prompt_person(cls_token).unsqueeze(1)
+
+        if return_attn:
+            top_token, top_attn = self.prompt_top(patch_tokens, return_attn=True)
+            underneath_token, underneath_attn = self.prompt_underneath(patch_tokens, return_attn=True)
+            hairstyle_token, hairstyle_attn = self.prompt_hairstyle(patch_tokens, return_attn=True)
+            shoes_token, shoes_attn = self.prompt_shoes(patch_tokens, return_attn=True)
+            carrying_token, carrying_attn = self.prompt_carrying(patch_tokens, return_attn=True)
+
+            attn_dict = {
+                "top": top_attn,
+                "underneath": underneath_attn,
+                "hairstyle": hairstyle_attn,
+                "shoes": shoes_attn,
+                "carrying": carrying_attn,
+            }
+
+            return (
+                person_token,
+                top_token,
+                underneath_token,
+                hairstyle_token,
+                shoes_token,
+                carrying_token,
+            ), attn_dict
 
         top_token = self.prompt_top(patch_tokens)
         underneath_token = self.prompt_underneath(patch_tokens)
